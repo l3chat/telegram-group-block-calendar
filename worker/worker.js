@@ -163,7 +163,6 @@ async function ensureBoard(env, chatId, topicId, t) {
 
 
 
-
 async function updateBoard(env, chatId, topicId, t) {
   const row = await env.DB.prepare(
     'SELECT message_id FROM boards WHERE chat_id=?1 AND IFNULL(topic_id,-1)=IFNULL(?2,-1)'
@@ -172,20 +171,17 @@ async function updateBoard(env, chatId, topicId, t) {
   let message_id = row?.message_id || null;
   const text = await renderBoard(env, chatId, t);
 
-  // 1) Пытаемся отредактировать существующий закреп
+  // 1) попытка редактирования
   if (message_id) {
     const resp = await api(env.BOT_TOKEN, 'editMessageText', {
       chat_id: chatId, message_id, text,
       parse_mode: 'HTML', disable_web_page_preview: true
     });
     const data = await resp.json().catch(() => ({}));
-    if (!data?.ok) {
-      // сообщение потеряно / нет прав редактирования → будем создавать заново
-      message_id = null;
-    }
+    if (!data?.ok) message_id = null; // потерян → создаём заново
   }
 
-  // 2) Если нечего редактировать — создаём новое сообщение и закрепляем
+  // 2) создание нового + запись в D1 + пин
   if (!message_id) {
     const resp2 = await api(env.BOT_TOKEN, 'sendMessage', {
       chat_id: chatId, text,
@@ -194,17 +190,15 @@ async function updateBoard(env, chatId, topicId, t) {
     });
     const data2 = await resp2.json().catch(() => ({}));
     const mid = data2?.result?.message_id;
-    if (!mid) return; // Нет прав отправить — выходим тихо
+    if (!mid) return; // нет прав на отправку — выходим
 
     message_id = mid;
 
-    // Обновляем/создаём запись про закреп
     await env.DB.prepare(
       'INSERT INTO boards(chat_id,topic_id,message_id) VALUES(?1,?2,?3) ' +
       'ON CONFLICT(chat_id,topic_id) DO UPDATE SET message_id=excluded.message_id'
     ).bind(String(chatId), topicId ?? null, message_id).run();
 
-    // Пытаемся закрепить (если прав нет — просто игнорим)
     try {
       await api(env.BOT_TOKEN, 'pinChatMessage', {
         chat_id: chatId, message_id,
@@ -345,32 +339,76 @@ async function updateBoard(env, chatId, topicId, t) {
         return new Response('ok');
       }
 
-      // --- /list
-      if (msg?.text && /^\/list(\@\w+)?/.test(msg.text)) {
-        const chat = msg.chat;
-        const threadId = msg.message_thread_id;
-        const t = await getT(env, chat.id);
+// --- /list
+if (msg?.text && /^\/list(\@\w+)?/.test(msg.text)) {
+  const chat = msg.chat;
+  const threadId = msg.message_thread_id;
+  const t = await getT(env, chat.id);
 
-        if (chat?.type !== 'group' && chat?.type !== 'supergroup') {
-          await sendText(env, chat.id, tr(t, 'none'));
-          return new Response('ok');
-        }
-        if (!env.DB) {
-          await sendText(env, chat.id, '❗ DB binding отсутствует.', threadExtra(threadId));
-          return new Response('ok');
-        }
-        try {
-          const rows = await getBookings(env, chat.id);
-          const text = rows.length
-            ? tr(t, 'list_header') + '\n' + rows.map(r => `${r.date} — ${r.user_name}`).join('\n')
-            : tr(t, 'none');
-          await sendText(env, chat.id, text, threadExtra(threadId));
-        } catch (e) {
-          console.error('D1 list fail', e);
-          await sendText(env, chat.id, '❗ Не удалось получить список (DB).', threadExtra(threadId));
-        }
-        return new Response('ok');
-      }
+  if (chat?.type !== 'group' && chat?.type !== 'supergroup') {
+    await sendText(env, chat.id, tr(t,'none'));
+    return new Response('ok');
+  }
+  if (!env.DB) {
+    await sendText(env, chat.id, '❗ DB binding отсутствует.', threadExtra(threadId));
+    return new Response('ok');
+  }
+
+  try {
+    const rows = await getBookings(env, chat.id);
+    const text = rows.length
+      ? tr(t,'list_header') + '\n' + rows.map(r => `${r.date} — ${r.user_name}`).join('\n')
+      : tr(t,'none');
+    await sendText(env, chat.id, text, threadExtra(threadId));
+
+    // ВАЖНО: обновим/пересоздадим закреп
+    try { await updateBoard(env, chat.id, threadId, t); } catch {}
+  } catch (e) {
+    console.error('D1 list fail', e);
+    await sendText(env, chat.id, '❗ Не удалось получить список (DB).', threadExtra(threadId));
+  }
+  return new Response('ok');
+}
+
+
+
+
+// --- /board [rebuild]  (только админ)
+if (msg?.text && /^\/board(\@\w+)?(\s+rebuild)?/i.test(msg.text)) {
+  const chat = msg.chat;
+  const threadId = msg.message_thread_id;
+  const from = msg.from;
+  const senderChat = msg.sender_chat;
+  const t = await getT(env, chat.id);
+
+  const isAdmin = await isAdminInChat(env, chat, from, senderChat);
+  if (!isAdmin) {
+    await sendText(env, chat.id, '⛔ Только администратор может управлять доской.', threadExtra(threadId));
+    return new Response('ok');
+  }
+
+  const m = msg.text.trim().match(/^\/board(?:@\w+)?\s+(rebuild)$/i);
+  const force = !!m;
+
+  if (force && env.DB) {
+    // удалим запись, чтобы гарантированно создать новое сообщение
+    await env.DB.prepare(
+      'DELETE FROM boards WHERE chat_id=?1 AND IFNULL(topic_id,-1)=IFNULL(?2,-1)'
+    ).bind(String(chat.id), threadId ?? null).run();
+  }
+
+  try {
+    await updateBoard(env, chat.id, threadId, t);
+    await sendText(env, chat.id, force ? '🔁 Доска пересоздана.' : '✅ Доска обновлена.', threadExtra(threadId));
+  } catch (e) {
+    console.error('board update fail', e);
+    await sendText(env, chat.id, '❗ Не удалось обновить доску.', threadExtra(threadId));
+  }
+  return new Response('ok');
+}
+
+
+
 
       // --- /lang ru|en|ja
       if (msg?.text && /^\/lang(\@\w+)?\s+/.test(msg.text)) {
