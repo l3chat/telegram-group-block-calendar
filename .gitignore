@@ -1,0 +1,21 @@
+# Node / tooling
+node_modules/
+npm-debug.log*
+yarn.lock
+pnpm-lock.yaml
+
+# Local env
+.env
+.env.*
+.dev.vars
+
+# Editor/OS
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Wrangler artifacts
+dist/
+.workers/
+.wrangler/

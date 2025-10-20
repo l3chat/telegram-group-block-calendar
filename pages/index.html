@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>Group Calendar (Telegram Mini App)</title>
+
+  <!-- Telegram Mini Apps JS -->
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+
+  <!-- FullCalendar (CDN) -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/fullcalendar/6.1.19/index.global.min.css"/>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/fullcalendar/6.1.19/index.global.min.js"></script>
+
+  <style>
+    html, body { height:100%; margin:0; font-family:system-ui, sans-serif; }
+    #wrap { padding: 12px; max-width: 980px; margin: 0 auto; }
+    #warn { padding: 8px 12px; border-radius: 8px; background:#fff3cd; color:#664d03; display:none; }
+    #calendar { margin-top: 8px; }
+    .muted { color:#6b7280; font-size: 0.9rem; }
+  </style>
+</head>
+<body>
+<div id="wrap">
+  <h3>Групповой календарь</h3>
+  <div id="warn">Похоже, календарь открыт не через Telegram. Вернись в чат и нажми кнопку бота “📅 Open Calendar”.</div>
+  <p class="muted">Коснись даты, затем нажми зелёную кнопку снизу (системная кнопка Telegram).</p>
+  <div id="calendar"></div>
+</div>
+
+<script>
+  // --- Telegram bootstrap ---
+  const tg = window.Telegram?.WebApp || null;
+  if (tg) {
+    try { tg.ready(); } catch {}
+    try { tg.expand(); } catch {}
+    document.body.style.background = tg.themeParams?.bg_color || "#fff";
+  } else {
+    document.getElementById('warn').style.display = 'block';
+  }
+
+  const qp       = new URLSearchParams(location.search);
+  const chatId   = qp.get("chat_id");
+  const topicId  = qp.get("topic_id");             // может быть null
+  const ingestUrl= qp.get("ingest");               // URL воркера /ingest (может быть null)
+
+  // Пользователь из окружения Mini App
+  const tgUser   = window.Telegram?.WebApp?.initDataUnsafe?.user || null;
+  const tg_uid   = tgUser?.id ?? null;
+  const tg_name  = tgUser
+    ? ([tgUser.first_name, tgUser.last_name].filter(Boolean).join(' ').trim()
+       || (tgUser.username ? '@' + tgUser.username : null))
+    : null;
+
+  // Подсказка из deep-link (воркер добавляет uid/uname)
+  const hint_uid  = qp.get('uid');
+  const hint_name = qp.get('uname');
+
+  // Итоговая идентичность
+  const user_id   = tg_uid ?? (hint_uid ? Number(hint_uid) : null);
+  const user_name = tg_name || (hint_name || null) || null;
+
+  let selectedDate = null;
+  let detachMainBtn = null;
+
+  function attachMainButton(handler) {
+    try { tg?.offEvent?.('mainButtonClicked', handler); } catch {}
+    try { tg?.MainButton?.offClick?.(handler); } catch {}
+    try { tg?.onEvent?.('mainButtonClicked', handler); } catch {}
+    try { tg?.MainButton?.onClick?.(handler); } catch {}
+    return () => {
+      try { tg?.offEvent?.('mainButtonClicked', handler); } catch {}
+      try { tg?.MainButton?.offClick?.(handler); } catch {}
+    };
+  }
+
+  function showMainButton(dateStr) {
+    if (!tg) return;
+    selectedDate = dateStr;
+    try {
+      tg.MainButton.setText(`Забронировать ${selectedDate}`);
+      tg.MainButton.enable();
+      tg.MainButton.show();
+    } catch {}
+
+    if (detachMainBtn) detachMainBtn();
+    detachMainBtn = attachMainButton(async () => {
+      if (!selectedDate) return;
+
+      const payload = {
+        type: 'book',
+        chat_id: chatId,
+        topic_id: topicId,
+        date: selectedDate,
+        user_id: user_id,
+        user_name: user_name
+      };
+
+      // 1) основной путь Mini Apps
+      try { tg.sendData(JSON.stringify(payload)); } catch {}
+
+      // 2) резерв — прямой POST на воркер (/ingest) с CORS
+      if (ingestUrl) {
+        try {
+          await fetch(ingestUrl, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify(payload)
+          });
+        } catch {}
+      }
+
+      // 3) закрываем WebApp — помогает доставке на части клиентов
+      try { tg.close(); } catch {}
+
+      // визуальная обратная связь
+      try { tg.HapticFeedback?.impactOccurred?.('light'); } catch {}
+      try { tg.showPopup?.({ title: "Отправлено", message: `Дата: ${selectedDate}`, buttons:[{type:"close"}] }); } catch {}
+    });
+  }
+
+  document.addEventListener('DOMContentLoaded', () => {
+    const calendarEl = document.getElementById('calendar');
+    const calendar = new FullCalendar.Calendar(calendarEl, {
+      initialView: 'dayGridMonth',
+      height: 'auto',
+      locale: 'ru',
+      selectable: true,
+      dateClick: (info) => { showMainButton(info.dateStr); },               // мобильный сценарий
+      select: (selectionInfo) => { showMainButton(selectionInfo.startStr); }, // десктоп
+      unselectAuto: true
+    });
+    calendar.render();
+  });
+</script>
+</body>
+</html>
