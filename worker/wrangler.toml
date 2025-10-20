@@ -7,7 +7,7 @@ workers_dev = true
 [vars]
 # Публичные (несекретные) переменные окружения:
 BOT_USERNAME = "GroupBlockCalendar_bot"
-PAGES_URL    = "https://block-calendar-telegram.pages.dev/"
+PAGES_URL    = "https://telegram-group-block-calendar.pages.dev/"
 
 [[d1_databases]]
 binding = "DB"               # то же имя используется в коде
