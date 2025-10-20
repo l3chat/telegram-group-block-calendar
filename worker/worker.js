@@ -1,18 +1,18 @@
 /**
-/  * Cloudflare Worker — Telegram Group Calendar
- Функции: Mini App + D1 + fallback /ingest + /open + /list + /lang + /cancel + закреп-доска + i18n
-
- Workers → Settings:
-   Secrets: BOT_TOKEN
-   Text   : BOT_USERNAME  (без \@)
-            PAGES_URL     (https://<your>.pages.dev)
-   D1     : DB
-
- D1 (одной строкой на таблицу):
-   CREATE TABLE IF NOT EXISTS bookings(chat_id TEXT NOT NULL,date TEXT NOT NULL,user_id INTEGER NOT NULL,user_name TEXT,ts TEXT NOT NULL DEFAULT (datetime('now')),PRIMARY KEY(chat_id,date));
-   CREATE TABLE IF NOT EXISTS boards(chat_id TEXT NOT NULL,topic_id INTEGER,message_id INTEGER NOT NULL,PRIMARY KEY(chat_id,topic_id));
-   CREATE TABLE IF NOT EXISTS chat_prefs(chat_id TEXT PRIMARY KEY,lang TEXT NOT NULL DEFAULT 'ru');
-              */
+ * Cloudflare Worker — Telegram Group Calendar
+ * Функции: Mini App + D1 + fallback /ingest + /open + /list + /listall + /lang + /cancel + /board + закреп-доска + i18n
+ *
+ * Workers → Settings:
+ *   Secrets: BOT_TOKEN
+ *   Text   : BOT_USERNAME  (без @)
+ *            PAGES_URL     (https://<your>.pages.dev)
+ *   D1     : DB
+ *
+ * D1 (одной строкой на таблицу):
+ *   CREATE TABLE IF NOT EXISTS bookings(chat_id TEXT NOT NULL,date TEXT NOT NULL,user_id INTEGER NOT NULL,user_name TEXT,ts TEXT NOT NULL DEFAULT (datetime('now')),PRIMARY KEY(chat_id,date));
+ *   CREATE TABLE IF NOT EXISTS boards(chat_id TEXT NOT NULL,topic_id INTEGER,message_id INTEGER NOT NULL,PRIMARY KEY(chat_id,topic_id));
+ *   CREATE TABLE IF NOT EXISTS chat_prefs(chat_id TEXT PRIMARY KEY,lang TEXT NOT NULL DEFAULT 'ru');
+ */
 
 export default {
   async fetch(req, env, ctx) {
@@ -57,7 +57,7 @@ export default {
         board_title: '📌 Бронирования',
         none: 'Пока нет броней.',
         taken: (d, u) => `✅ День ${d} занят пользователем ${u}.`,
-        busy: (d, u) => `❌ День ${d} уже занят (${u}).`,
+        busy:  (d, u) => `❌ День ${d} уже занят (${u}).`,
         canceled_ok: (d) => `🗑️ Бронь на ${d} снята.`,
         canceled_denied: (d) => `⛔ Вы не владелец брони ${d}.`,
         canceled_absent: (d) => `🙈 Брони на ${d} не найдено.`,
@@ -70,7 +70,7 @@ export default {
         board_title: '📌 Bookings',
         none: 'No bookings yet.',
         taken: (d, u) => `✅ ${d} booked by ${u}.`,
-        busy: (d, u) => `❌ ${d} already booked by ${u}.`,
+        busy:  (d, u) => `❌ ${d} already booked by ${u}.`,
         canceled_ok: (d) => `🗑️ Booking for ${d} removed.`,
         canceled_denied: (d) => `⛔ You don’t own the booking for ${d}.`,
         canceled_absent: (d) => `🙈 No booking found for ${d}.`,
@@ -83,7 +83,7 @@ export default {
         board_title: '📌 予約一覧',
         none: 'まだ予約はありません。',
         taken: (d, u) => `✅ ${d} は ${u} が予約しました。`,
-        busy: (d, u) => `❌ ${d} は既に予約済み（${u}）。`,
+        busy:  (d, u) => `❌ ${d} は既に予約済み（${u}）。`,
         canceled_ok: (d) => `🗑️ ${d} の予約を取り消しました。`,
         canceled_denied: (d) => `⛔ ${d} の予約者ではありません。`,
         canceled_absent: (d) => `🙈 ${d} の予約は見つかりません。`,
@@ -107,7 +107,7 @@ export default {
     };
 
     const setLang = async (env, chatId, lang) => {
-      if (!['ru', 'en', 'ja'].includes(lang)) return;
+      if (!['ru','en','ja'].includes(lang)) return;
       await env.DB.prepare(
         'INSERT INTO chat_prefs(chat_id,lang) VALUES(?1,?2) ON CONFLICT(chat_id) DO UPDATE SET lang=excluded.lang'
       ).bind(String(chatId), lang).run();
@@ -123,6 +123,14 @@ export default {
         .bind(String(chatId)).all()).results || [];
     };
 
+    // дополнительные хелперы для выборки «с сегодняшнего дня»
+    const todayISO = () => (new Date()).toISOString().slice(0, 10);
+    const getBookingsSince = async (env, chatId, fromDate) => {
+      return (await env.DB
+        .prepare('SELECT date, user_name FROM bookings WHERE chat_id=? AND date>=? ORDER BY date')
+        .bind(String(chatId), fromDate).all()).results || [];
+    };
+
     const renderBoard = async (env, chatId, t) => {
       const rows = await getBookings(env, chatId);
       if (!rows.length) return `${t.board_title}\n\n${t.none}`;
@@ -130,94 +138,84 @@ export default {
       return `${t.board_title}\n\n${t.list_header}\n${lines.join('\n')}`;
     };
 
+    async function ensureBoard(env, chatId, topicId, t) {
+      const exist = await env.DB.prepare(
+        'SELECT message_id FROM boards WHERE chat_id=?1 AND IFNULL(topic_id,-1)=IFNULL(?2,-1)'
+      ).bind(String(chatId), topicId ?? null).first();
+      if (exist?.message_id) return exist.message_id;
 
-async function ensureBoard(env, chatId, topicId, t) {
-  const exist = await env.DB.prepare(
-    'SELECT message_id FROM boards WHERE chat_id=?1 AND IFNULL(topic_id,-1)=IFNULL(?2,-1)'
-  ).bind(String(chatId), topicId ?? null).first();
-  if (exist?.message_id) return exist.message_id;
-
-  const text = await renderBoard(env, chatId, t);
-  const resp = await api(env.BOT_TOKEN, 'sendMessage', {
-    chat_id: chatId, text,
-    parse_mode: 'HTML', disable_web_page_preview: true,
-    ...(Number.isFinite(topicId) ? { message_thread_id: topicId } : {})
-  });
-  const data = await resp.json().catch(() => ({}));
-  const mid = data?.result?.message_id;
-  if (!mid) return null;
-
-  await env.DB.prepare(
-    'INSERT INTO boards(chat_id,topic_id,message_id) VALUES(?1,?2,?3)'
-  ).bind(String(chatId), topicId ?? null, mid).run();
-
-  try {
-    await api(env.BOT_TOKEN, 'pinChatMessage', {
-      chat_id: chatId, message_id: mid,
-      ...(Number.isFinite(topicId) ? { message_thread_id: topicId } : {}),
-      disable_notification: true
-    });
-  } catch {}
-  return mid;
-}
-
-
-
-async function updateBoard(env, chatId, topicId, t) {
-  const row = await env.DB.prepare(
-    'SELECT message_id FROM boards WHERE chat_id=?1 AND IFNULL(topic_id,-1)=IFNULL(?2,-1)'
-  ).bind(String(chatId), topicId ?? null).first();
-
-  let message_id = row?.message_id || null;
-  const text = await renderBoard(env, chatId, t);
-
-  // 1) попытка редактирования
-  if (message_id) {
-    const resp = await api(env.BOT_TOKEN, 'editMessageText', {
-      chat_id: chatId, message_id, text,
-      parse_mode: 'HTML', disable_web_page_preview: true
-    });
-    const data = await resp.json().catch(() => ({}));
-    if (!data?.ok) message_id = null; // потерян → создаём заново
-  }
-
-  // 2) создание нового + запись в D1 + пин
-  if (!message_id) {
-    const resp2 = await api(env.BOT_TOKEN, 'sendMessage', {
-      chat_id: chatId, text,
-      parse_mode: 'HTML', disable_web_page_preview: true,
-      ...(Number.isFinite(topicId) ? { message_thread_id: topicId } : {})
-    });
-    const data2 = await resp2.json().catch(() => ({}));
-    const mid = data2?.result?.message_id;
-    if (!mid) return; // нет прав на отправку — выходим
-
-    message_id = mid;
-
-    await env.DB.prepare(
-      'INSERT INTO boards(chat_id,topic_id,message_id) VALUES(?1,?2,?3) ' +
-      'ON CONFLICT(chat_id,topic_id) DO UPDATE SET message_id=excluded.message_id'
-    ).bind(String(chatId), topicId ?? null, message_id).run();
-
-    try {
-      await api(env.BOT_TOKEN, 'pinChatMessage', {
-        chat_id: chatId, message_id,
-        ...(Number.isFinite(topicId) ? { message_thread_id: topicId } : {}),
-        disable_notification: true
+      const text = await renderBoard(env, chatId, t);
+      const resp = await api(env.BOT_TOKEN, 'sendMessage', {
+        chat_id: chatId, text,
+        parse_mode: 'HTML', disable_web_page_preview: true,
+        ...(Number.isFinite(topicId) ? { message_thread_id: topicId } : {})
       });
-    } catch {}
-  }
-}
+      const data = await resp.json().catch(() => ({}));
+      const mid = data?.result?.message_id;
+      if (!mid) return null;
 
+      await env.DB.prepare(
+        'INSERT INTO boards(chat_id,topic_id,message_id) VALUES(?1,?2,?3)'
+      ).bind(String(chatId), topicId ?? null, mid).run();
 
+      try {
+        await api(env.BOT_TOKEN, 'pinChatMessage', {
+          chat_id: chatId, message_id: mid,
+          ...(Number.isFinite(topicId) ? { message_thread_id: topicId } : {}),
+          disable_notification: true
+        });
+      } catch {}
+      return mid;
+    }
 
+    // устойчивая версия: редактируем, а если не вышло — создаём новый и закрепляем
+    async function updateBoard(env, chatId, topicId, t) {
+      const row = await env.DB.prepare(
+        'SELECT message_id FROM boards WHERE chat_id=?1 AND IFNULL(topic_id,-1)=IFNULL(?2,-1)'
+      ).bind(String(chatId), topicId ?? null).first();
+
+      let message_id = row?.message_id || null;
+      const text = await renderBoard(env, chatId, t);
+
+      if (message_id) {
+        const resp = await api(env.BOT_TOKEN, 'editMessageText', {
+          chat_id: chatId, message_id, text,
+          parse_mode: 'HTML', disable_web_page_preview: true
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (!data?.ok) message_id = null; // потерян / не редактируется → создаём заново
+      }
+
+      if (!message_id) {
+        const resp2 = await api(env.BOT_TOKEN, 'sendMessage', {
+          chat_id: chatId, text,
+          parse_mode: 'HTML', disable_web_page_preview: true,
+          ...(Number.isFinite(topicId) ? { message_thread_id: topicId } : {})
+        });
+        const data2 = await resp2.json().catch(() => ({}));
+        const mid = data2?.result?.message_id;
+        if (!mid) return;
+
+        message_id = mid;
+
+        await env.DB.prepare(
+          'INSERT INTO boards(chat_id,topic_id,message_id) VALUES(?1,?2,?3) ' +
+          'ON CONFLICT(chat_id,topic_id) DO UPDATE SET message_id=excluded.message_id'
+        ).bind(String(chatId), topicId ?? null, message_id).run();
+
+        try {
+          await api(env.BOT_TOKEN, 'pinChatMessage', {
+            chat_id: chatId, message_id,
+            ...(Number.isFinite(topicId) ? { message_thread_id: topicId } : {}),
+            disable_notification: true
+          });
+        } catch {}
+      }
+    }
 
     // ===== Auth helpers =======================================================
     async function isAdminInChat(env, chat, from, sender_chat) {
-      // Анонимный админ: сообщение «от имени чата»
-      if (sender_chat && sender_chat.id === chat.id) return true;
-
-      // Обычный случай: getChatMember
+      if (sender_chat && sender_chat.id === chat.id) return true; // анонимный админ
       if (from?.id) {
         try {
           const r = await api(env.BOT_TOKEN, 'getChatMember',
@@ -225,7 +223,7 @@ async function updateBoard(env, chatId, topicId, t) {
           const d = await r.json();
           const status = d?.result?.status;
           return (status === 'creator' || status === 'administrator');
-        } catch { }
+        } catch {}
       }
       return false;
     }
@@ -233,7 +231,6 @@ async function updateBoard(env, chatId, topicId, t) {
     function isOwnerOfBooking(row, from) {
       const userId = from?.id ?? null;
       if (userId !== null && row.user_id === userId) return true;
-      // «Наследие»: ранние брони с user_id=0 — сверяем имя (без регистра)
       if (row.user_id === 0) {
         const a = (row.user_name || '').trim().toLowerCase();
         const b = (fullName(from) || '').trim().toLowerCase();
@@ -255,7 +252,7 @@ async function updateBoard(env, chatId, topicId, t) {
         ok: true, hasBOT_TOKEN: !!env.BOT_TOKEN,
         BOT_USERNAME: env.BOT_USERNAME || null,
         PAGES_URL: pagesBase || null, dbOk, rows
-      }, null, 2), { headers: { 'content-type': 'application/json' } });
+      }, null, 2), { headers: { 'content-type': 'application/json' }});
     }
 
     // Диагностика: отправить deep-link в группу
@@ -298,14 +295,14 @@ async function updateBoard(env, chatId, topicId, t) {
               'INSERT INTO bookings(chat_id,date,user_id,user_name) VALUES (?1,?2,?3,?4)'
             ).bind(chat_id, date, uid, uname).run();
 
-            await sendText(env, chat_id, tr(t, 'taken', date, uname), threadExtra(topicIdNum));
-            try { await updateBoard(env, chat_id, topicIdNum, t); } catch { }
+            await sendText(env, chat_id, tr(t,'taken', date, uname), threadExtra(topicIdNum));
+            try { await updateBoard(env, chat_id, topicIdNum, t); } catch {}
           } catch {
             const row = await env.DB
               .prepare('SELECT user_name FROM bookings WHERE chat_id=?1 AND date=?2')
               .bind(chat_id, date).first();
             await sendText(env, chat_id,
-              tr(t, 'busy', date, row?.user_name || 'кто-то'), threadExtra(topicIdNum));
+              tr(t,'busy', date, row?.user_name || 'кто-то'), threadExtra(topicIdNum));
           }
         } catch (e) { console.error('ingest fail', e); }
         return new Response('ok', { headers: cors });
@@ -329,7 +326,7 @@ async function updateBoard(env, chatId, topicId, t) {
         if (chat?.type === 'group' || chat?.type === 'supergroup') {
           const payload = `G${chat.id}` + (threadId ? `_T${threadId}` : '');
           const deepLink = `https://t.me/${env.BOT_USERNAME}?start=${encodeURIComponent(payload)}`;
-          await sendText(env, chat.id, tr(t, 'open_in_dm'), {
+          await sendText(env, chat.id, tr(t,'open_in_dm'), {
             reply_markup: { inline_keyboard: [[{ text: '📬 Открыть в ЛС', url: deepLink }]] },
             ...threadExtra(threadId)
           });
@@ -339,76 +336,97 @@ async function updateBoard(env, chatId, topicId, t) {
         return new Response('ok');
       }
 
-// --- /list
-if (msg?.text && /^\/list(\@\w+)?/.test(msg.text)) {
-  const chat = msg.chat;
-  const threadId = msg.message_thread_id;
-  const t = await getT(env, chat.id);
+      // --- /list  → будущие (сегодня и дальше, UTC)
+      if (msg?.text && /^\/list(\@\w+)?$/.test(msg.text.trim())) {
+        const chat = msg.chat;
+        const threadId = msg.message_thread_id;
+        const t = await getT(env, chat.id);
 
-  if (chat?.type !== 'group' && chat?.type !== 'supergroup') {
-    await sendText(env, chat.id, tr(t,'none'));
-    return new Response('ok');
-  }
-  if (!env.DB) {
-    await sendText(env, chat.id, '❗ DB binding отсутствует.', threadExtra(threadId));
-    return new Response('ok');
-  }
+        if (chat?.type !== 'group' && chat?.type !== 'supergroup') {
+          await sendText(env, chat.id, tr(t,'none'));
+          return new Response('ok');
+        }
+        if (!env.DB) {
+          await sendText(env, chat.id, '❗ DB binding отсутствует.', threadExtra(threadId));
+          return new Response('ok');
+        }
+        try {
+          const since = todayISO();
+          const rows = await getBookingsSince(env, chat.id, since);
+          const text = rows.length
+            ? tr(t,'list_header') + '\n' + rows.map(r => `${r.date} — ${r.user_name}`).join('\n')
+            : tr(t,'none');
+          await sendText(env, chat.id, text, threadExtra(threadId));
 
-  try {
-    const rows = await getBookings(env, chat.id);
-    const text = rows.length
-      ? tr(t,'list_header') + '\n' + rows.map(r => `${r.date} — ${r.user_name}`).join('\n')
-      : tr(t,'none');
-    await sendText(env, chat.id, text, threadExtra(threadId));
+          try { await updateBoard(env, chat.id, threadId, t); } catch {}
+        } catch (e) {
+          console.error('D1 list (future) fail', e);
+          await sendText(env, chat.id, '❗ Не удалось получить список (DB).', threadExtra(threadId));
+        }
+        return new Response('ok');
+      }
 
-    // ВАЖНО: обновим/пересоздадим закреп
-    try { await updateBoard(env, chat.id, threadId, t); } catch {}
-  } catch (e) {
-    console.error('D1 list fail', e);
-    await sendText(env, chat.id, '❗ Не удалось получить список (DB).', threadExtra(threadId));
-  }
-  return new Response('ok');
-}
+      // --- /listall  → все
+      if (msg?.text && /^\/listall(\@\w+)?$/.test(msg.text.trim())) {
+        const chat = msg.chat;
+        const threadId = msg.message_thread_id;
+        const t = await getT(env, chat.id);
 
+        if (chat?.type !== 'group' && chat?.type !== 'supergroup') {
+          await sendText(env, chat.id, tr(t,'none'));
+          return new Response('ok');
+        }
+        if (!env.DB) {
+          await sendText(env, chat.id, '❗ DB binding отсутствует.', threadExtra(threadId));
+          return new Response('ok');
+        }
+        try {
+          const rows = await getBookings(env, chat.id);
+          const text = rows.length
+            ? tr(t,'list_header') + '\n' + rows.map(r => `${r.date} — ${r.user_name}`).join('\n')
+            : tr(t,'none');
+          await sendText(env, chat.id, text, threadExtra(threadId));
 
+          try { await updateBoard(env, chat.id, threadId, t); } catch {}
+        } catch (e) {
+          console.error('D1 listall fail', e);
+          await sendText(env, chat.id, '❗ Не удалось получить список (DB).', threadExtra(threadId));
+        }
+        return new Response('ok');
+      }
 
+      // --- /board [rebuild]  (только админ)
+      if (msg?.text && /^\/board(\@\w+)?(\s+rebuild)?/i.test(msg.text)) {
+        const chat = msg.chat;
+        const threadId = msg.message_thread_id;
+        const from = msg.from;
+        const senderChat = msg.sender_chat;
+        const t = await getT(env, chat.id);
 
-// --- /board [rebuild]  (только админ)
-if (msg?.text && /^\/board(\@\w+)?(\s+rebuild)?/i.test(msg.text)) {
-  const chat = msg.chat;
-  const threadId = msg.message_thread_id;
-  const from = msg.from;
-  const senderChat = msg.sender_chat;
-  const t = await getT(env, chat.id);
+        const isAdmin = await isAdminInChat(env, chat, from, senderChat);
+        if (!isAdmin) {
+          await sendText(env, chat.id, '⛔ Только администратор может управлять доской.', threadExtra(threadId));
+          return new Response('ok');
+        }
 
-  const isAdmin = await isAdminInChat(env, chat, from, senderChat);
-  if (!isAdmin) {
-    await sendText(env, chat.id, '⛔ Только администратор может управлять доской.', threadExtra(threadId));
-    return new Response('ok');
-  }
+        const m = msg.text.trim().match(/^\/board(?:@\w+)?\s+(rebuild)$/i);
+        const force = !!m;
 
-  const m = msg.text.trim().match(/^\/board(?:@\w+)?\s+(rebuild)$/i);
-  const force = !!m;
+        if (force && env.DB) {
+          await env.DB.prepare(
+            'DELETE FROM boards WHERE chat_id=?1 AND IFNULL(topic_id,-1)=IFNULL(?2,-1)'
+          ).bind(String(chat.id), threadId ?? null).run();
+        }
 
-  if (force && env.DB) {
-    // удалим запись, чтобы гарантированно создать новое сообщение
-    await env.DB.prepare(
-      'DELETE FROM boards WHERE chat_id=?1 AND IFNULL(topic_id,-1)=IFNULL(?2,-1)'
-    ).bind(String(chat.id), threadId ?? null).run();
-  }
-
-  try {
-    await updateBoard(env, chat.id, threadId, t);
-    await sendText(env, chat.id, force ? '🔁 Доска пересоздана.' : '✅ Доска обновлена.', threadExtra(threadId));
-  } catch (e) {
-    console.error('board update fail', e);
-    await sendText(env, chat.id, '❗ Не удалось обновить доску.', threadExtra(threadId));
-  }
-  return new Response('ok');
-}
-
-
-
+        try {
+          await updateBoard(env, chat.id, threadId, t);
+          await sendText(env, chat.id, force ? '🔁 Доска пересоздана.' : '✅ Доска обновлена.', threadExtra(threadId));
+        } catch (e) {
+          console.error('board update fail', e);
+          await sendText(env, chat.id, '❗ Не удалось обновить доску.', threadExtra(threadId));
+        }
+        return new Response('ok');
+      }
 
       // --- /lang ru|en|ja
       if (msg?.text && /^\/lang(\@\w+)?\s+/.test(msg.text)) {
@@ -419,8 +437,8 @@ if (msg?.text && /^\/board(\@\w+)?(\s+rebuild)?/i.test(msg.text)) {
         const lang = m[1].toLowerCase();
         if (env.DB) await setLang(env, chat.id, lang);
         const t = await getT(env, chat.id);
-        await sendText(env, chat.id, tr(t, 'lang_set', lang), threadExtra(threadId));
-        try { await updateBoard(env, chat.id, threadId, t); } catch { }
+        await sendText(env, chat.id, tr(t,'lang_set', lang), threadExtra(threadId));
+        try { await updateBoard(env, chat.id, threadId, t); } catch {}
         return new Response('ok');
       }
 
@@ -433,7 +451,7 @@ if (msg?.text && /^\/board(\@\w+)?(\s+rebuild)?/i.test(msg.text)) {
         const t = await getT(env, chat.id);
 
         const m = msg.text.trim().match(/^\/cancel(?:@\w+)?\s+(\d{4}-\d{2}-\d{2})$/);
-        if (!m) { await sendText(env, chat.id, tr(t, 'wrong_format'), threadExtra(threadId)); return new Response('ok'); }
+        if (!m) { await sendText(env, chat.id, tr(t,'wrong_format'), threadExtra(threadId)); return new Response('ok'); }
         const date = m[1];
         if (!env.DB) return new Response('ok');
 
@@ -441,13 +459,13 @@ if (msg?.text && /^\/board(\@\w+)?(\s+rebuild)?/i.test(msg.text)) {
           'SELECT user_id, user_name FROM bookings WHERE chat_id=?1 AND date=?2'
         ).bind(String(chat.id), date).first();
 
-        if (!row) { await sendText(env, chat.id, tr(t, 'canceled_absent', date), threadExtra(threadId)); return new Response('ok'); }
+        if (!row) { await sendText(env, chat.id, tr(t,'canceled_absent', date), threadExtra(threadId)); return new Response('ok'); }
 
         const owner = isOwnerOfBooking(row, from);
         const admin = await isAdminInChat(env, chat, from, senderChat);
 
         if (!(owner || admin)) {
-          await sendText(env, chat.id, tr(t, 'canceled_denied', date), threadExtra(threadId));
+          await sendText(env, chat.id, tr(t,'canceled_denied', date), threadExtra(threadId));
           return new Response('ok');
         }
 
@@ -455,8 +473,8 @@ if (msg?.text && /^\/board(\@\w+)?(\s+rebuild)?/i.test(msg.text)) {
           'DELETE FROM bookings WHERE chat_id=?1 AND date=?2'
         ).bind(String(chat.id), date).run();
 
-        await sendText(env, chat.id, tr(t, 'canceled_ok', date), threadExtra(threadId));
-        try { await updateBoard(env, chat.id, threadId, t); } catch { }
+        await sendText(env, chat.id, tr(t,'canceled_ok', date), threadExtra(threadId));
+        try { await updateBoard(env, chat.id, threadId, t); } catch {}
         return new Response('ok');
       }
 
@@ -470,10 +488,10 @@ if (msg?.text && /^\/board(\@\w+)?(\s+rebuild)?/i.test(msg.text)) {
           const uname = fullName(msg.from);
           const ingest = `https://${url.host}/ingest`;
           const openUrl = `${pagesBase}/index.html?chat_id=${groupId}`
-            + (topicId ? `&topic_id=${topicId}` : '')
-            + `&ingest=${encodeURIComponent(ingest)}`
-            + `&uid=${encodeURIComponent(String(uid))}`
-            + `&uname=${encodeURIComponent(uname)}`;
+                        + (topicId ? `&topic_id=${topicId}` : '')
+                        + `&ingest=${encodeURIComponent(ingest)}`
+                        + `&uid=${encodeURIComponent(String(uid))}`
+                        + `&uname=${encodeURIComponent(uname)}`;
 
           await api(env.BOT_TOKEN, 'sendMessage', {
             chat_id: msg.chat.id,
@@ -507,13 +525,13 @@ if (msg?.text && /^\/board(\@\w+)?(\s+rebuild)?/i.test(msg.text)) {
               'INSERT INTO bookings(chat_id,date,user_id,user_name) VALUES (?1,?2,?3,?4)'
             ).bind(chat_id, date, uid, uname).run();
 
-            await sendText(env, chat_id, tr(t, 'taken', date, uname), threadExtra(topicIdNum));
-            try { await updateBoard(env, chat_id, topicIdNum, t); } catch { }
+            await sendText(env, chat_id, tr(t,'taken', date, uname), threadExtra(topicIdNum));
+            try { await updateBoard(env, chat_id, topicIdNum, t); } catch {}
           } catch {
             const row = await env.DB
               .prepare('SELECT user_name FROM bookings WHERE chat_id=?1 AND date=?2')
               .bind(chat_id, date).first();
-            await sendText(env, chat_id, tr(t, 'busy', date, row?.user_name || 'кто-то'), threadExtra(topicIdNum));
+            await sendText(env, chat_id, tr(t,'busy', date, row?.user_name || 'кто-то'), threadExtra(topicIdNum));
           }
         } catch (e) { console.error('web_app_data parse fail', e); }
         return new Response('ok');
