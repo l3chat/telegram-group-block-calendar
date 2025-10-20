@@ -14,11 +14,13 @@ Frontend is a Telegram Mini App (Cloudflare Pages). Backend is a Cloudflare Work
 - `pages/index.html` — Mini App UI (FullCalendar).
 - `worker/worker.js` — Telegram webhook + D1 logic + board management.
 - D1 tables:
-  ```sql
+```sql
   CREATE TABLE IF NOT EXISTS bookings(chat_id TEXT NOT NULL,date TEXT NOT NULL,user_id INTEGER NOT NULL,user_name TEXT,ts TEXT NOT NULL DEFAULT (datetime('now')),PRIMARY KEY(chat_id,date));
+
   CREATE TABLE IF NOT EXISTS boards(chat_id TEXT NOT NULL,topic_id INTEGER,message_id INTEGER NOT NULL,PRIMARY KEY(chat_id,topic_id));
+
   CREATE TABLE IF NOT EXISTS chat_prefs(chat_id TEXT PRIMARY KEY,lang TEXT NOT NULL DEFAULT 'ru');
-````
+```
 
 ## Deployment (short)
 
