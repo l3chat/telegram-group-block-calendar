@@ -1,17 +1,17 @@
 /**
- *  * Cloudflare Worker — Telegram Group Calendar
-  * Функции: Mini App + D1 + fallback /ingest + /open + /list + /lang + /cancel + закреп-доска + i18n
-   *
-    * Workers → Settings:
-     *   Secrets: BOT_TOKEN
-      *   Text   : BOT_USERNAME  (без \@)
-       *            PAGES_URL     (https://<your>.pages.dev)
-        *   D1     : DB
-         *
-          * D1 (одной строкой на таблицу):
-           *   CREATE TABLE IF NOT EXISTS bookings(chat_id TEXT NOT NULL,date TEXT NOT NULL,user_id INTEGER NOT NULL,user_name TEXT,ts TEXT NOT NULL DEFAULT (datetime('now')),PRIMARY KEY(chat_id,date));
-            *   CREATE TABLE IF NOT EXISTS boards(chat_id TEXT NOT NULL,topic_id INTEGER,message_id INTEGER NOT NULL,PRIMARY KEY(chat_id,topic_id));
-             *   CREATE TABLE IF NOT EXISTS chat_prefs(chat_id TEXT PRIMARY KEY,lang TEXT NOT NULL DEFAULT 'ru');
+/  * Cloudflare Worker — Telegram Group Calendar
+ Функции: Mini App + D1 + fallback /ingest + /open + /list + /lang + /cancel + закреп-доска + i18n
+
+ Workers → Settings:
+   Secrets: BOT_TOKEN
+   Text   : BOT_USERNAME  (без \@)
+            PAGES_URL     (https://<your>.pages.dev)
+   D1     : DB
+
+ D1 (одной строкой на таблицу):
+   CREATE TABLE IF NOT EXISTS bookings(chat_id TEXT NOT NULL,date TEXT NOT NULL,user_id INTEGER NOT NULL,user_name TEXT,ts TEXT NOT NULL DEFAULT (datetime('now')),PRIMARY KEY(chat_id,date));
+   CREATE TABLE IF NOT EXISTS boards(chat_id TEXT NOT NULL,topic_id INTEGER,message_id INTEGER NOT NULL,PRIMARY KEY(chat_id,topic_id));
+   CREATE TABLE IF NOT EXISTS chat_prefs(chat_id TEXT PRIMARY KEY,lang TEXT NOT NULL DEFAULT 'ru');
               */
 
 export default {
@@ -130,45 +130,93 @@ export default {
       return `${t.board_title}\n\n${t.list_header}\n${lines.join('\n')}`;
     };
 
-    const ensureBoard = async (env, chatId, topicId, t) => {
-      const exist = await env.DB.prepare(
-        'SELECT message_id FROM boards WHERE chat_id=?1 AND IFNULL(topic_id,-1)=IFNULL(?2,-1)'
-      ).bind(String(chatId), topicId ?? null).first();
-      if (exist?.message_id) return exist.message_id;
 
-      const text = await renderBoard(env, chatId, t);
-      const resp = await api(env.BOT_TOKEN, 'sendMessage', {
-        chat_id: chatId, text, parse_mode: 'HTML', disable_web_page_preview: true, ...threadExtra(topicId)
+async function ensureBoard(env, chatId, topicId, t) {
+  const exist = await env.DB.prepare(
+    'SELECT message_id FROM boards WHERE chat_id=?1 AND IFNULL(topic_id,-1)=IFNULL(?2,-1)'
+  ).bind(String(chatId), topicId ?? null).first();
+  if (exist?.message_id) return exist.message_id;
+
+  const text = await renderBoard(env, chatId, t);
+  const resp = await api(env.BOT_TOKEN, 'sendMessage', {
+    chat_id: chatId, text,
+    parse_mode: 'HTML', disable_web_page_preview: true,
+    ...(Number.isFinite(topicId) ? { message_thread_id: topicId } : {})
+  });
+  const data = await resp.json().catch(() => ({}));
+  const mid = data?.result?.message_id;
+  if (!mid) return null;
+
+  await env.DB.prepare(
+    'INSERT INTO boards(chat_id,topic_id,message_id) VALUES(?1,?2,?3)'
+  ).bind(String(chatId), topicId ?? null, mid).run();
+
+  try {
+    await api(env.BOT_TOKEN, 'pinChatMessage', {
+      chat_id: chatId, message_id: mid,
+      ...(Number.isFinite(topicId) ? { message_thread_id: topicId } : {}),
+      disable_notification: true
+    });
+  } catch {}
+  return mid;
+}
+
+
+
+
+async function updateBoard(env, chatId, topicId, t) {
+  const row = await env.DB.prepare(
+    'SELECT message_id FROM boards WHERE chat_id=?1 AND IFNULL(topic_id,-1)=IFNULL(?2,-1)'
+  ).bind(String(chatId), topicId ?? null).first();
+
+  let message_id = row?.message_id || null;
+  const text = await renderBoard(env, chatId, t);
+
+  // 1) Пытаемся отредактировать существующий закреп
+  if (message_id) {
+    const resp = await api(env.BOT_TOKEN, 'editMessageText', {
+      chat_id: chatId, message_id, text,
+      parse_mode: 'HTML', disable_web_page_preview: true
+    });
+    const data = await resp.json().catch(() => ({}));
+    if (!data?.ok) {
+      // сообщение потеряно / нет прав редактирования → будем создавать заново
+      message_id = null;
+    }
+  }
+
+  // 2) Если нечего редактировать — создаём новое сообщение и закрепляем
+  if (!message_id) {
+    const resp2 = await api(env.BOT_TOKEN, 'sendMessage', {
+      chat_id: chatId, text,
+      parse_mode: 'HTML', disable_web_page_preview: true,
+      ...(Number.isFinite(topicId) ? { message_thread_id: topicId } : {})
+    });
+    const data2 = await resp2.json().catch(() => ({}));
+    const mid = data2?.result?.message_id;
+    if (!mid) return; // Нет прав отправить — выходим тихо
+
+    message_id = mid;
+
+    // Обновляем/создаём запись про закреп
+    await env.DB.prepare(
+      'INSERT INTO boards(chat_id,topic_id,message_id) VALUES(?1,?2,?3) ' +
+      'ON CONFLICT(chat_id,topic_id) DO UPDATE SET message_id=excluded.message_id'
+    ).bind(String(chatId), topicId ?? null, message_id).run();
+
+    // Пытаемся закрепить (если прав нет — просто игнорим)
+    try {
+      await api(env.BOT_TOKEN, 'pinChatMessage', {
+        chat_id: chatId, message_id,
+        ...(Number.isFinite(topicId) ? { message_thread_id: topicId } : {}),
+        disable_notification: true
       });
-      const data = await resp.json();
-      const mid = data?.result?.message_id;
-      if (!mid) return null;
+    } catch {}
+  }
+}
 
-      await env.DB.prepare(
-        'INSERT INTO boards(chat_id,topic_id,message_id) VALUES(?1,?2,?3)'
-      ).bind(String(chatId), topicId ?? null, mid).run();
 
-      // pin — не критично, если прав нет
-      try {
-        await api(env.BOT_TOKEN, 'pinChatMessage', {
-          chat_id: chatId, message_id: mid, ...threadExtra(topicId), disable_notification: true
-        });
-      } catch { }
-      return mid;
-    };
 
-    const updateBoard = async (env, chatId, topicId, t) => {
-      const row = await env.DB.prepare(
-        'SELECT message_id FROM boards WHERE chat_id=?1 AND IFNULL(topic_id,-1)=IFNULL(?2,-1)'
-      ).bind(String(chatId), topicId ?? null).first();
-      const message_id = row?.message_id ?? await ensureBoard(env, chatId, topicId, t);
-      if (!message_id) return;
-
-      const text = await renderBoard(env, chatId, t);
-      await api(env.BOT_TOKEN, 'editMessageText', {
-        chat_id: chatId, message_id, text, parse_mode: 'HTML', disable_web_page_preview: true
-      });
-    };
 
     // ===== Auth helpers =======================================================
     async function isAdminInChat(env, chat, from, sender_chat) {
