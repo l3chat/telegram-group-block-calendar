@@ -1,14 +1,15 @@
-name = "group-calendar-bot"
+# worker/wrangler.toml
+name = 'cool-frog-62b9'
 main = "worker.js"
 compatibility_date = "2025-10-20"
 workers_dev = true
 
 [vars]
 # Публичные (несекретные) переменные окружения:
-BOT_USERNAME = "YourBotNameWithoutAt"
-PAGES_URL    = "https://your-pages.pages.dev"
+BOT_USERNAME = "GroupBlockCalendar_bot"
+PAGES_URL    = "https://block-calendar-telegram.pages.dev/"
 
 [[d1_databases]]
 binding = "DB"               # то же имя используется в коде
 database_name = "calendar"   # имя БД в Cloudflare D1
-database_id = "REPLACE_ME"   # ID вашей БД (можно убрать и привязать через Dashboard)
+database_id = "4576d98b-6341-4f8c-9883-bca9d48382c3"   # ID вашей БД (можно убрать и привязать через Dashboard)
