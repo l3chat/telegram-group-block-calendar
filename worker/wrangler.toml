@@ -13,3 +13,14 @@ PAGES_URL    = "https://telegram-group-block-calendar.pages.dev/"
 binding = "DB"               # то же имя используется в коде
 database_name = "calendar"   # имя БД в Cloudflare D1
 database_id = "4576d98b-6341-4f8c-9883-bca9d48382c3"   # ID вашей БД (можно убрать и привязать через Dashboard)
+
+[observability]
+enabled = false
+head_sampling_rate = 1
+
+[observability.logs]
+enabled = true
+head_sampling_rate = 1
+persist = true
+invocation_logs = true
+
