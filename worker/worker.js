@@ -332,7 +332,7 @@ if (msg?.text && /^\/open(?:@\w+)?(?:\s|$)/i.test(msg.text)) {
       },
       ...(threadId ? { message_thread_id: threadId } : {})
     });
-    console.log('open/group resp:', await resp.json().catch(()=>null));
+    console.log('open/group resp====:', await resp.json().catch(()=>null));
   }
   return new Response('ok');
 }
