@@ -1,5 +1,6 @@
 <!doctype html>
 <html lang="ru">
+
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -14,37 +15,96 @@
 
   <style>
     :root {
-      --mine-bg: #c8f7c5;    /* зелёный — мои */
+      --mine-bg: #c8f7c5;
+      /* зелёный — мои */
       --mine-border: #2e7d32;
-      --theirs-bg: #ffd6cc;  /* коралловый — чужие */
+      --theirs-bg: #ffd6cc;
+      /* коралловый — чужие */
       --theirs-border: #c62828;
     }
-    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 0; background:#fff; }
-    .wrap { max-width: 920px; margin: 0 auto; padding: 10px 12px 24px; }
-    #legend { display:flex; gap:16px; align-items:center; font-size:14px; margin: 6px 2px 10px; color:#333; }
-    .pill { display:inline-flex; align-items:center; gap:8px; }
-    .dot { width:14px; height:14px; border-radius:4px; border:1px solid; display:inline-block; }
-    .dot.mine   { background: var(--mine-bg);   border-color: var(--mine-border); }
-    .dot.theirs { background: var(--theirs-bg); border-color: var(--theirs-border); }
+
+    body {
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+      margin: 0;
+      background: #fff;
+    }
+
+    .wrap {
+      max-width: 920px;
+      margin: 0 auto;
+      padding: 10px 12px 24px;
+    }
+
+    #legend {
+      display: flex;
+      gap: 16px;
+      align-items: center;
+      font-size: 14px;
+      margin: 6px 2px 10px;
+      color: #333;
+    }
+
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .dot {
+      width: 14px;
+      height: 14px;
+      border-radius: 4px;
+      border: 1px solid;
+      display: inline-block;
+    }
+
+    .dot.mine {
+      background: var(--mine-bg);
+      border-color: var(--mine-border);
+    }
+
+    .dot.theirs {
+      background: var(--theirs-bg);
+      border-color: var(--theirs-border);
+    }
 
     .fc-event.mine {
       background: var(--mine-bg) !important;
       border-color: var(--mine-border) !important;
-      color:#102a10 !important;
-      font-weight: 600;
-    }
-    .fc-event.theirs {
-      background: var(--theirs-bg) !important;
-      border-color: var(--theirs-border) !important;
-      color:#2b0d0d !important;
+      color: #102a10 !important;
       font-weight: 600;
     }
 
-    .actions { display:flex; justify-content:center; margin-top:12px; gap:8px; }
-    .btn { padding:10px 14px; border-radius:10px; border:1px solid #ccc; background:#f9f9f9; cursor:pointer; font-weight:600; }
-    .btn[disabled] { opacity:.5; cursor: not-allowed; }
+    .fc-event.theirs {
+      background: var(--theirs-bg) !important;
+      border-color: var(--theirs-border) !important;
+      color: #2b0d0d !important;
+      font-weight: 600;
+    }
+
+    .actions {
+      display: flex;
+      justify-content: center;
+      margin-top: 12px;
+      gap: 8px;
+    }
+
+    .btn {
+      padding: 10px 14px;
+      border-radius: 10px;
+      border: 1px solid #ccc;
+      background: #f9f9f9;
+      cursor: pointer;
+      font-weight: 600;
+    }
+
+    .btn[disabled] {
+      opacity: .5;
+      cursor: not-allowed;
+    }
   </style>
 </head>
+
 <body>
   <div class="wrap">
     <div id="legend">
@@ -60,20 +120,20 @@
 
   <script>
     // --- Telegram init (тема/готовность)
-    try { Telegram.WebApp.ready?.(); Telegram.WebApp.expand?.(); } catch {}
+    try { Telegram.WebApp.ready?.(); Telegram.WebApp.expand?.(); } catch { }
 
     const qs = new URLSearchParams(location.search);
-    const CHAT_ID  = qs.get('chat_id');          // группа/тема
+    const CHAT_ID = qs.get('chat_id');          // группа/тема
     const TOPIC_ID = qs.get('topic_id') || '';   // опционально
-    const INGEST   = qs.get('ingest') || '';     // POST для создания
-    const UID_QS   = Number(qs.get('uid') || '0');
+    const INGEST = qs.get('ingest') || '';     // POST для создания
+    const UID_QS = Number(qs.get('uid') || '0');
     const UNAME_QS = qs.get('uname') || 'через WebApp';
 
     // Если запустили в группе через web_app-кнопку, у нас ещё есть initDataUnsafe
     const init = (window.Telegram && Telegram.WebApp && Telegram.WebApp.initDataUnsafe) || {};
     const fromUnsafe = init.user || null;
 
-    const UID   = fromUnsafe?.id ?? UID_QS;
+    const UID = fromUnsafe?.id ?? UID_QS;
     const UNAME = (fromUnsafe ? [fromUnsafe.first_name, fromUnsafe.last_name].filter(Boolean).join(' ').trim() : UNAME_QS) || 'через WebApp';
 
     // base URL воркера берём из ingest (срезаем /ingest)
@@ -81,10 +141,10 @@
     try {
       const u = new URL(INGEST);
       apiBase = u.origin + u.pathname.replace(/\/ingest\/?$/, '');
-    } catch {}
+    } catch { }
 
     const BOOKINGS_URL = apiBase ? `${apiBase}/bookings?chat_id=${encodeURIComponent(CHAT_ID)}` : '';
-    const CANCEL_URL   = apiBase ? `${apiBase}/cancel_api` : '';
+    const CANCEL_URL = apiBase ? `${apiBase}/cancel_api` : '';
 
     const calendarEl = document.getElementById('calendar');
     const confirmBtn = document.getElementById('confirm');
@@ -125,7 +185,7 @@
           end: b.date,
           allDay: true,
           display: 'block',
-          classNames: [ mine ? 'mine' : 'theirs' ]
+          classNames: [mine ? 'mine' : 'theirs']
         };
       });
     }
@@ -138,9 +198,9 @@
       calendar.render();
     }
 
-    function showPopup(title, message, buttons=[]) {
+    function showPopup(title, message, buttons = []) {
       if (Telegram?.WebApp?.showPopup) {
-        Telegram.WebApp.showPopup({ title, message, buttons: buttons.length ? buttons : [{type:'close'}] });
+        Telegram.WebApp.showPopup({ title, message, buttons: buttons.length ? buttons : [{ type: 'close' }] });
       } else {
         alert(`${title}\n\n${message}`);
       }
@@ -161,8 +221,8 @@
             // Занято. Если это моя бронь — предложим снять.
             if (Number(b.user_id) === UID) {
               showPopup('Мой занятый день', `${day} — ваша бронь (${b.user_name}). Снять?`, [
-                { id:'cancel', type:'default', text:'Снять бронь' },
-                { type:'close', text:'Закрыть' }
+                { id: 'cancel', type: 'default', text: 'Снять бронь' },
+                { type: 'close', text: 'Закрыть' }
               ]);
               // перехватим result через onEvent
               Telegram?.WebApp?.onEvent?.('popupClosed', async (ev) => {
@@ -184,7 +244,7 @@
         },
         unselect: () => { selectedDate = null; confirmBtn.disabled = true; },
         events: initial,
-        headerToolbar: { left:'prev,next today', center:'title', right:'' }
+        headerToolbar: { left: 'prev,next today', center: 'title', right: '' }
       });
 
       calendar.render();
@@ -209,17 +269,17 @@
           Telegram.WebApp.sendData(JSON.stringify(payload));
           ok = true;
         }
-      } catch {}
+      } catch { }
 
       // Fallback — прямой POST в воркер
       if (!ok && INGEST) {
         try {
           await fetch(INGEST, {
-            method:'POST', headers:{'content-type':'application/json'},
+            method: 'POST', headers: { 'content-type': 'application/json' },
             body: JSON.stringify(payload)
           });
           ok = true;
-        } catch {}
+        } catch { }
       }
 
       if (ok) {
@@ -237,7 +297,7 @@
       if (!CANCEL_URL) return showPopup('Ошибка', 'Нет API для отмены.');
       try {
         const r = await fetch(CANCEL_URL, {
-          method:'POST', headers:{'content-type':'application/json'},
+          method: 'POST', headers: { 'content-type': 'application/json' },
           body: JSON.stringify({ chat_id: CHAT_ID, date: day, user_id: UID })
         });
         const j = await r.json();
@@ -257,10 +317,23 @@
     }
 
     // init
-    await initCalendar();
+    //    await initCalendar();
+    //
+    //    confirmBtn.addEventListener('click', bookSelected);
+    //    refreshBtn.addEventListener('click', reloadEvents);
 
-    confirmBtn.addEventListener('click', bookSelected);
-    refreshBtn.addEventListener('click', reloadEvents);
+    (async () => {
+      try {
+        await initCalendar();
+      } catch (e) {
+        console.error('initCalendar failed', e);
+        alert('Не удалось инициализировать календарь.');
+        return;
+      }
+      confirmBtn.addEventListener('click', bookSelected);
+      refreshBtn.addEventListener('click', reloadEvents);
+    })();
   </script>
 </body>
+
 </html>
