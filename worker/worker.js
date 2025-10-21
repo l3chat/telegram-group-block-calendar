@@ -54,7 +54,7 @@ export default {
         open_in_dm: 'Откройте календарь кнопкой ниже:',
         none: 'Пока нет броней.',
         taken: (d, u) => `✅ День ${d} занят пользователем ${u}.`,
-        busy:  (d, u) => `❌ День ${d} уже занят (${u}).`,
+        busy: (d, u) => `❌ День ${d} уже занят (${u}).`,
         canceled_ok: (d) => `🗑️ Бронь на ${d} снята.`,
         canceled_denied: (d) => `⛔ Вы не владелец брони ${d}.`,
         canceled_absent: (d) => `🙈 Брони на ${d} не найдено.`,
@@ -68,7 +68,7 @@ export default {
         open_in_dm: 'Open the calendar using a button below:',
         none: 'No bookings yet.',
         taken: (d, u) => `✅ ${d} booked by ${u}.`,
-        busy:  (d, u) => `❌ ${d} already booked by ${u}.`,
+        busy: (d, u) => `❌ ${d} already booked by ${u}.`,
         canceled_ok: (d) => `🗑️ Booking for ${d} removed.`,
         canceled_denied: (d) => `⛔ You don’t own the booking for ${d}.`,
         canceled_absent: (d) => `🙈 No booking found for ${d}.`,
@@ -82,7 +82,7 @@ export default {
         open_in_dm: '下のボタンからカレンダーを開いてください：',
         none: 'まだ予約はありません。',
         taken: (d, u) => `✅ ${d} は ${u} が予約しました。`,
-        busy:  (d, u) => `❌ ${d} は既に予約済み（${u}）。`,
+        busy: (d, u) => `❌ ${d} は既に予約済み（${u}）。`,
         canceled_ok: (d) => `🗑️ ${d} の予約を取り消しました。`,
         canceled_denied: (d) => `⛔ ${d} の予約者ではありません。`,
         canceled_absent: (d) => `🙈 ${d} の予約は見つかりません。`,
@@ -108,7 +108,7 @@ export default {
     };
 
     const setLang = async (env, chatId, lang) => {
-      if (!['ru','en','ja'].includes(lang)) return;
+      if (!['ru', 'en', 'ja'].includes(lang)) return;
       await env.DB.prepare(
         'INSERT INTO chat_prefs(chat_id,lang) VALUES(?1,?2) ON CONFLICT(chat_id) DO UPDATE SET lang=excluded.lang'
       ).bind(String(chatId), lang).run();
@@ -144,25 +144,25 @@ export default {
         ok: true, hasBOT_TOKEN: !!env.BOT_TOKEN,
         BOT_USERNAME: env.BOT_USERNAME || null,
         PAGES_URL: pagesBase || null, dbOk, rows
-      }, null, 2), { headers: { 'content-type': 'application/json' }});
+      }, null, 2), { headers: { 'content-type': 'application/json' } });
     }
 
     // ---------- JSON: /bookings
     if (req.method === 'GET' && url.pathname === '/bookings') {
       const chatId = url.searchParams.get('chat_id');
       if (!chatId) {
-        return new Response(JSON.stringify({ ok:false, error:'chat_id is required' }), {
+        return new Response(JSON.stringify({ ok: false, error: 'chat_id is required' }), {
           status: 400, headers: { 'content-type': 'application/json', ...cors }
         });
       }
       try {
         const rows = await getBookings(env, chatId);
-        return new Response(JSON.stringify({ ok:true, chat_id: String(chatId), bookings: rows }), {
+        return new Response(JSON.stringify({ ok: true, chat_id: String(chatId), bookings: rows }), {
           headers: { 'content-type': 'application/json', ...cors }
         });
       } catch (e) {
         console.error('bookings json fail', e);
-        return new Response(JSON.stringify({ ok:false }), {
+        return new Response(JSON.stringify({ ok: false }), {
           status: 500, headers: { 'content-type': 'application/json', ...cors }
         });
       }
@@ -175,15 +175,15 @@ export default {
         try {
           const p = await req.json();
           const chat_id = String(p.chat_id || '');
-          const date    = String(p.date    || '');
+          const date = String(p.date || '');
           const user_id = Number(p.user_id || 0);
           if (!chat_id || !date) {
-            return new Response(JSON.stringify({ ok:false, error:'bad-params' }), {
+            return new Response(JSON.stringify({ ok: false, error: 'bad-params' }), {
               status: 400, headers: { 'content-type': 'application/json', ...cors }
             });
           }
           if (!env.DB) {
-            return new Response(JSON.stringify({ ok:false, error:'no-db' }), {
+            return new Response(JSON.stringify({ ok: false, error: 'no-db' }), {
               status: 200, headers: { 'content-type': 'application/json', ...cors }
             });
           }
@@ -193,7 +193,7 @@ export default {
           ).bind(chat_id, date).first();
 
           if (!row) {
-            return new Response(JSON.stringify({ ok:false, error:'not-found' }), {
+            return new Response(JSON.stringify({ ok: false, error: 'not-found' }), {
               status: 200, headers: { 'content-type': 'application/json', ...cors }
             });
           }
@@ -202,7 +202,7 @@ export default {
           const isAdmin = await isAdminInChatViaId(env, chat_id, user_id);
 
           if (!(isOwner || isAdmin)) {
-            return new Response(JSON.stringify({ ok:false, error:'forbidden' }), {
+            return new Response(JSON.stringify({ ok: false, error: 'forbidden' }), {
               status: 200, headers: { 'content-type': 'application/json', ...cors }
             });
           }
@@ -210,12 +210,12 @@ export default {
           await env.DB.prepare('DELETE FROM bookings WHERE chat_id=?1 AND date=?2')
             .bind(chat_id, date).run();
 
-          return new Response(JSON.stringify({ ok:true }), {
+          return new Response(JSON.stringify({ ok: true }), {
             headers: { 'content-type': 'application/json', ...cors }
           });
         } catch (e) {
           console.error('cancel_api fail', e);
-          return new Response(JSON.stringify({ ok:false }), {
+          return new Response(JSON.stringify({ ok: false }), {
             status: 500, headers: { 'content-type': 'application/json', ...cors }
           });
         }
@@ -232,7 +232,7 @@ export default {
 
           const chat_id = String(p.chat_id);
           const date = String(p.date);
-          const uid  = Number(p.user_id) || 0;
+          const uid = Number(p.user_id) || 0;
           const uname = (p.user_name && String(p.user_name).trim()) || 'через WebApp';
           if (!env.DB) return new Response('ok', { headers: cors });
 
@@ -256,36 +256,45 @@ export default {
       let update; try { update = await req.json(); } catch { return new Response('ok'); }
       const msg = update?.message;
 
-      // /open → две кнопки: открыть WebApp в группе и в ЛС
-      if (msg?.text && /^\/open(\@\w+)?/.test(msg.text)) {
-        const chat = msg.chat;
-        const threadId = msg.message_thread_id;
-        const t = await getT(env, chat.id);
 
-        if (chat?.type === 'group' || chat?.type === 'supergroup') {
+      // /open → одно сообщение с одной web_app-кнопкой (запуск в группе/теме)
+      if (msg?.text && /^\/open(?:@\w+)?(?:\s|$)/i.test(msg.text)) {
+        try {
+          const chat = msg.chat;
+          const threadId = msg.message_thread_id;
+          const from = msg.from;
+          const t = await getT(env, chat.id);
+
+          // Разрешаем только group/supergroup — в ЛС просим запустить в группе
+          if (chat?.type !== 'group' && chat?.type !== 'supergroup') {
+            await sendText(env, chat.id, 'Эта команда работает в группе/теме.');
+            return new Response('ok');
+          }
+
+          // Формируем URL мини-приложения с контекстом
           const ingest = `https://${url.host}/ingest`;
           const baseUrl = `${pagesBase}/index.html?chat_id=${chat.id}`
-                        + (threadId ? `&topic_id=${threadId}` : '')
-                        + `&ingest=${encodeURIComponent(ingest)}`
-                        + `&uid=${encodeURIComponent(String(msg.from?.id || 0))}`
-                        + `&uname=${encodeURIComponent(fullName(msg.from))}`;
+            + (threadId ? `&topic_id=${threadId}` : '')
+            + `&ingest=${encodeURIComponent(ingest)}`
+            + `&uid=${encodeURIComponent(String(from?.id || 0))}`
+            + `&uname=${encodeURIComponent(fullName(from))}`;
 
-          const deepLink = `https://t.me/${env.BOT_USERNAME}?start=${encodeURIComponent(`G${chat.id}` + (threadId ? `_T${threadId}` : ''))}`;
-
-          await sendText(env, chat.id, tr(t,'open_in_dm'), {
-            reply_markup: {
-              inline_keyboard: [
-                [{ text: tr(t,'open_here_btn'), web_app: { url: baseUrl } }],
-                [{ text: tr(t,'open_dm_btn'),   url: deepLink }]
-              ]
-            },
-            ...threadExtra(threadId)
+          // Отправляем ОДНО сообщение с ОДНОЙ web_app-кнопкой
+          await api(env.BOT_TOKEN, 'sendMessage', {
+            chat_id: chat.id,
+            text: 'Откройте календарь:',
+            reply_markup: { inline_keyboard: [[{ text: '📅 Открыть календарь здесь', web_app: { url: baseUrl } }]] },
+            ...(threadId ? { message_thread_id: threadId } : {})
           });
-        } else {
-          await sendText(env, chat.id, 'Команду /open нужно вызывать в группе.');
+
+        } catch (e) {
+          // Журналируем, чтобы ловить «нет реакции»
+          console.error('open handler fail', e);
         }
         return new Response('ok');
       }
+
+
 
       // /list → просто текст
       if (msg?.text && /^\/list(\@\w+)?/.test(msg.text)) {
@@ -294,7 +303,7 @@ export default {
         const t = await getT(env, chat.id);
 
         if (chat?.type !== 'group' && chat?.type !== 'supergroup') {
-          await sendText(env, chat.id, tr(t,'none'));
+          await sendText(env, chat.id, tr(t, 'none'));
           return new Response('ok');
         }
         if (!env.DB) {
@@ -304,8 +313,8 @@ export default {
         try {
           const rows = await getBookings(env, chat.id);
           const text = rows.length
-            ? tr(t,'list_header') + '\n' + rows.map(r => `${r.date} — ${r.user_name}`).join('\n')
-            : tr(t,'none');
+            ? tr(t, 'list_header') + '\n' + rows.map(r => `${r.date} — ${r.user_name}`).join('\n')
+            : tr(t, 'none');
           await sendText(env, chat.id, text, threadExtra(threadId));
         } catch (e) {
           console.error('D1 list fail', e);
@@ -323,7 +332,7 @@ export default {
         const lang = m[1].toLowerCase();
         if (env.DB) await setLang(env, chat.id, lang);
         const t = await getT(env, chat.id);
-        await sendText(env, chat.id, tr(t,'lang_set', lang), threadExtra(threadId));
+        await sendText(env, chat.id, tr(t, 'lang_set', lang), threadExtra(threadId));
         return new Response('ok');
       }
 
@@ -335,7 +344,7 @@ export default {
 
           const chat_id = String(p.chat_id);
           const date = String(p.date);
-          const uid  = Number(p.user_id) || (msg.from?.id ?? 0);
+          const uid = Number(p.user_id) || (msg.from?.id ?? 0);
           const uname = (p.user_name && String(p.user_name).trim()) || fullName(msg.from);
 
           if (!env.DB) return new Response('ok');
@@ -344,7 +353,7 @@ export default {
             await env.DB.prepare(
               'INSERT INTO bookings(chat_id,date,user_id,user_name) VALUES (?1,?2,?3,?4)'
             ).bind(chat_id, date, uid, uname).run();
-          } catch {}
+          } catch { }
         } catch (e) { console.error('web_app_data parse fail', e); }
         return new Response('ok');
       }
