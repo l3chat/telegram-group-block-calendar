@@ -251,134 +251,140 @@ export default {
 
 
     // ---------- Telegram webhook ----------
-if (req.method === 'POST' && url.pathname.startsWith('/webhook/')) {
-  const pathToken = url.pathname.split('/').pop();
-  if (!env.BOT_TOKEN || pathToken !== env.BOT_TOKEN) return new Response('ok');
+    if (req.method === 'POST' && url.pathname.startsWith('/webhook/')) {
+      const pathToken = url.pathname.split('/').pop();
+      if (!env.BOT_TOKEN || pathToken !== env.BOT_TOKEN) return new Response('ok');
 
-  let update; try { update = await req.json(); } catch { return new Response('ok'); }
+      let update; try { update = await req.json(); } catch { return new Response('ok'); }
 
-  // Унифицированный доступ к "сообщению"
-  const msg = update.message
-           || update.channel_post
-           || update.edited_message
-           || update.edited_channel_post
-           || null;
+      // Унифицированный доступ к "сообщению"
+      const msg = update.message
+        || update.channel_post
+        || update.edited_message
+        || update.edited_channel_post
+        || null;
 
-  // Быстрый трейсовый лог, помогает понять что прилетает
-  try {
-    const kind = msg?.chat?.type || Object.keys(update)[0] || 'unknown';
-    console.log('tg-update kind=', kind, 'hasText=', !!msg?.text, 'hasEntities=', !!msg?.entities);
-  } catch {}
+      // Быстрый трейсовый лог, помогает понять что прилетает
+      try {
+        const kind = msg?.chat?.type || Object.keys(update)[0] || 'unknown';
+        console.log('tg-update kind=', kind, 'hasText=', !!msg?.text, 'hasEntities=', !!msg?.entities);
+      } catch { }
 
-  // Достаём текст команды безопасно через entities (bot_command)
-  function extractCommand(m) {
-    if (!m?.text || !Array.isArray(m.entities)) return null;
-    const ent = m.entities.find(e => e.type === 'bot_command' && e.offset === 0);
-    if (!ent) return null;
-    const raw = m.text.slice(0, ent.length);  // "/open" или "/open@BotName"
-    const tail = m.text.slice(ent.length).trim(); // всё после команды
-    return { raw, tail };
-  }
+      // Достаём текст команды безопасно через entities (bot_command)
+      function extractCommand(m) {
+        if (!m?.text || !Array.isArray(m.entities)) return null;
+        const ent = m.entities.find(e => e.type === 'bot_command' && e.offset === 0);
+        if (!ent) return null;
+        const raw = m.text.slice(0, ent.length);  // "/open" или "/open@BotName"
+        const tail = m.text.slice(ent.length).trim(); // всё после команды
+        return { raw, tail };
+      }
 
-  // Помощники
-  const fullName = (u) => {
-    if (!u) return 'кто-то';
-    const s = [u.first_name, u.last_name].filter(Boolean).join(' ').trim();
-    return s || (u.username ? '@' + u.username : `id${u.id}`);
-  };
-  const threadExtra = (topicId) =>
-    Number.isFinite(topicId) ? { message_thread_id: topicId } : {};
+      // Помощники
+      const fullName = (u) => {
+        if (!u) return 'кто-то';
+        const s = [u.first_name, u.last_name].filter(Boolean).join(' ').trim();
+        return s || (u.username ? '@' + u.username : `id${u.id}`);
+      };
+      const threadExtra = (topicId) =>
+        Number.isFinite(topicId) ? { message_thread_id: topicId } : {};
 
-  // Команда
-  const cmd = extractCommand(msg);
+      // Команда
+      const cmd = extractCommand(msg);
 
-  // ===== /open — одна web_app-кнопка "Открыть здесь"
-  if (cmd && /^\/open(?:@\w+)?$/i.test(cmd.raw)) {
-    try {
-      const chat     = msg.chat;
-      const threadId = msg.message_thread_id;
-      const from     = msg.from;
+      // /open → две кнопки: WebApp в группе + deep-link в ЛС, с логированием ответа
+      if (msg?.text && /^\/open(?:@\w+)?(?:\s|$)/i.test(msg.text)) {
+        const chat = msg.chat;
+        const threadId = msg.message_thread_id;
+        const from = msg.from;
 
-      // Разрешаем только group/supergroup — именно там хотим «открывать здесь»
-      if (chat?.type !== 'group' && chat?.type !== 'supergroup') {
-        await fetch(`https://api.telegram.org/bot${env.BOT_TOKEN}/sendMessage`, {
-          method: 'POST', headers: {'content-type':'application/json'},
-          body: JSON.stringify({ chat_id: chat.id, text: 'Команда /open работает в группе/теме.' })
-        });
+        try {
+          // Разрешаем только group/supergroup: именно там «открыть здесь»
+          if (chat?.type !== 'group' && chat?.type !== 'supergroup') {
+            await api(env.BOT_TOKEN, 'sendMessage', {
+              chat_id: chat.id,
+              text: 'Команду /open нужно вызывать в группе/теме.'
+            });
+            return new Response('ok');
+          }
+
+          // Требуется корректный домен WebApp в BotFather: /setdomain = PAGES_URL
+          const pagesBase = (env.PAGES_URL || '').replace(/\/+$/, ''); // https://...pages.dev
+          const ingest = `https://${url.host}/ingest`;
+
+          const webappUrl = `${pagesBase}/index.html?chat_id=${encodeURIComponent(chat.id)}`
+            + (threadId ? `&topic_id=${encodeURIComponent(threadId)}` : '')
+            + `&ingest=${encodeURIComponent(ingest)}`
+            + `&uid=${encodeURIComponent(String(from?.id || 0))}`
+            + `&uname=${encodeURIComponent([from?.first_name, from?.last_name].filter(Boolean).join(' ') || ('@' + (from?.username || '')) || 'через WebApp')}`;
+
+          const deepLink = `https://t.me/${env.BOT_USERNAME}?start=${encodeURIComponent('G' + chat.id + (threadId ? '_T' + threadId : ''))}`;
+
+          const resp = await api(env.BOT_TOKEN, 'sendMessage', {
+            chat_id: chat.id,
+            text: 'Откройте календарь:',
+            reply_markup: {
+              inline_keyboard: [
+                [{ text: '📅 Открыть здесь', web_app: { url: webappUrl } }],
+                [{ text: '📬 Открыть в ЛС', url: deepLink }]
+              ]
+            },
+            ...(threadId ? { message_thread_id: threadId } : {})
+          });
+
+          const data = await resp.json().catch(() => null);
+          console.log('open/sendMessage resp:', data); // <— важный лог
+        } catch (e) {
+          console.error('open handler fail', e);
+        }
         return new Response('ok');
       }
 
-      // Строим URL Mini-App с контекстом
-      const ingest = `https://${url.host}/ingest`;
-      const baseUrl = `${(env.PAGES_URL || '').replace(/\/+$/,'')}/index.html?chat_id=${chat.id}`
-                    + (threadId ? `&topic_id=${threadId}` : '')
-                    + `&ingest=${encodeURIComponent(ingest)}`
-                    + `&uid=${encodeURIComponent(String(from?.id || 0))}`
-                    + `&uname=${encodeURIComponent(fullName(from))}`;
+      // ===== /list — оставить как было (простой текст)
+      if (cmd && /^\/list(?:@\w+)?$/i.test(cmd.raw)) {
+        const chat = msg.chat;
+        const threadId = msg.message_thread_id;
 
-      // Отправляем одно сообщение с одной web_app-кнопкой
-      await fetch(`https://api.telegram.org/bot${env.BOT_TOKEN}/sendMessage`, {
-        method: 'POST', headers: {'content-type':'application/json'},
-        body: JSON.stringify({
-          chat_id: chat.id,
-          text: 'Откройте календарь:',
-          reply_markup: { inline_keyboard: [[{ text: '📅 Открыть календарь здесь', web_app: { url: baseUrl } }]] },
-          ...(threadId ? { message_thread_id: threadId } : {})
-        })
-      });
+        if (chat?.type !== 'group' && chat?.type !== 'supergroup') {
+          await fetch(`https://api.telegram.org/bot${env.BOT_TOKEN}/sendMessage`, {
+            method: 'POST', headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ chat_id: chat.id, text: 'Пока нет броней.' })
+          });
+          return new Response('ok');
+        }
 
-      console.log('open: sent web_app button to chat', chat.id, 'thread', threadId ?? null);
-    } catch (e) {
-      console.error('open handler fail', e);
-    }
-    return new Response('ok');
-  }
+        if (!env.DB) {
+          await fetch(`https://api.telegram.org/bot${env.BOT_TOKEN}/sendMessage`, {
+            method: 'POST', headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ chat_id: chat.id, text: '❗ DB binding отсутствует.', ...(threadId ? { message_thread_id: threadId } : {}) })
+          });
+          return new Response('ok');
+        }
 
-  // ===== /list — оставить как было (простой текст)
-  if (cmd && /^\/list(?:@\w+)?$/i.test(cmd.raw)) {
-    const chat = msg.chat;
-    const threadId = msg.message_thread_id;
+        try {
+          const rows = (await env.DB
+            .prepare('SELECT date, user_name FROM bookings WHERE chat_id=? ORDER BY date')
+            .bind(String(chat.id)).all()).results || [];
+          const text = rows.length
+            ? '📅 Занятые дни:\n' + rows.map(r => `${r.date} — ${r.user_name}`).join('\n')
+            : 'Пока нет броней.';
+          await fetch(`https://api.telegram.org/bot${env.BOT_TOKEN}/sendMessage`, {
+            method: 'POST', headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ chat_id: chat.id, text, ...(threadId ? { message_thread_id: threadId } : {}) })
+          });
+        } catch (e) {
+          console.error('D1 list fail', e);
+          await fetch(`https://api.telegram.org/bot${env.BOT_TOKEN}/sendMessage`, {
+            method: 'POST', headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ chat_id: chat.id, text: '❗ Не удалось получить список (DB).', ...(threadId ? { message_thread_id: threadId } : {}) })
+          });
+        }
+        return new Response('ok');
+      }
 
-    if (chat?.type !== 'group' && chat?.type !== 'supergroup') {
-      await fetch(`https://api.telegram.org/bot${env.BOT_TOKEN}/sendMessage`, {
-        method: 'POST', headers: {'content-type':'application/json'},
-        body: JSON.stringify({ chat_id: chat.id, text: 'Пока нет броней.' })
-      });
+      // Остальные вещи (web_app_data, ingest и т.п.) — оставьте как у вас ниже
       return new Response('ok');
     }
-
-    if (!env.DB) {
-      await fetch(`https://api.telegram.org/bot${env.BOT_TOKEN}/sendMessage`, {
-        method: 'POST', headers: {'content-type':'application/json'},
-        body: JSON.stringify({ chat_id: chat.id, text: '❗ DB binding отсутствует.', ...(threadId ? { message_thread_id: threadId } : {}) })
-      });
-      return new Response('ok');
-    }
-
-    try {
-      const rows = (await env.DB
-        .prepare('SELECT date, user_name FROM bookings WHERE chat_id=? ORDER BY date')
-        .bind(String(chat.id)).all()).results || [];
-      const text = rows.length
-        ? '📅 Занятые дни:\n' + rows.map(r => `${r.date} — ${r.user_name}`).join('\n')
-        : 'Пока нет броней.';
-      await fetch(`https://api.telegram.org/bot${env.BOT_TOKEN}/sendMessage`, {
-        method: 'POST', headers: {'content-type':'application/json'},
-        body: JSON.stringify({ chat_id: chat.id, text, ...(threadId ? { message_thread_id: threadId } : {}) })
-      });
-    } catch (e) {
-      console.error('D1 list fail', e);
-      await fetch(`https://api.telegram.org/bot${env.BOT_TOKEN}/sendMessage`, {
-        method: 'POST', headers: {'content-type':'application/json'},
-        body: JSON.stringify({ chat_id: chat.id, text: '❗ Не удалось получить список (DB).', ...(threadId ? { message_thread_id: threadId } : {}) })
-      });
-    }
-    return new Response('ok');
-  }
-
-  // Остальные вещи (web_app_data, ingest и т.п.) — оставьте как у вас ниже
-  return new Response('ok');
-}
 
 
     return new Response('Not found', { status: 404 });
