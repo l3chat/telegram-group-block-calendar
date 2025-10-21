@@ -182,7 +182,7 @@
           id: `d:${b.date}`,
           title: b.user_name || '—',
           start: b.date,
-          end: b.date,
+          end: addDaysISO(b.date, 1),     // allDay-«end» эксклюзивная → +1 день
           allDay: true,
           display: 'block',
           classNames: [mine ? 'mine' : 'theirs']
@@ -214,6 +214,7 @@
         height: 'auto',
         selectable: true,
         selectAllow: (info) => !bookedMap.has(toISODate(info.start)),
+
         dateClick: (arg) => {
           const day = toISODate(arg.date);
           const b = bookedMap.get(day);
@@ -237,12 +238,20 @@
             }
             return;
           }
+
+          // <-- НОВОЕ: свободный день — выбираем его одним тапом
+          selectedDate = day;
+          confirmBtn.disabled = false;
+          // визуально подсветим выбор
+          calendar.select({ start: day, end: addDaysISO(day, 1), allDay: true });
+
         },
         select: (info) => {
           selectedDate = toISODate(info.start);
           confirmBtn.disabled = !selectedDate;
         },
         unselect: () => { selectedDate = null; confirmBtn.disabled = true; },
+        selectLongPressDelay: 0,   // на мобильном не ждать «долгого касания»        
         events: initial,
         headerToolbar: { left: 'prev,next today', center: 'title', right: '' }
       });
@@ -315,6 +324,15 @@
         showPopup('Ошибка', 'Сеть недоступна.');
       }
     }
+
+
+
+    function addDaysISO(iso, d = 1) {
+      const dt = new Date(iso);
+      dt.setDate(dt.getDate() + d);
+      return toISODate(dt);
+    }
+
 
     // init
     //    await initCalendar();
