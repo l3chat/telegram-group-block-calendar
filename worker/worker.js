@@ -1,6 +1,6 @@
 /**
- * Cloudflare Worker — Telegram Group Calendar (без закрепов)
- * Mini App (Pages) + D1 + /open + /list + /lang + /cancel + fallback /ingest
+ * Cloudflare Worker — Telegram Group Calendar (без закрепов + умный /list)
+ * Mini App (Pages) + D1 + /open + /list + /lang + /cancel + fallback /ingest + callback_query refresh
  *
  * Workers → Settings:
  *   Secrets: BOT_TOKEN
@@ -39,14 +39,14 @@ export default {
       return s || (u.username ? '@' + u.username : `id${u.id}`);
     };
 
+    const threadExtra = (topicId) =>
+      Number.isFinite(topicId) ? { message_thread_id: topicId } : {};
+
     const cors = {
       'access-control-allow-origin': '*',
       'access-control-allow-methods': 'POST, OPTIONS',
       'access-control-allow-headers': 'content-type',
     };
-
-    const threadExtra = (topicId) =>
-      Number.isFinite(topicId) ? { message_thread_id: topicId } : {};
 
     // ---------- i18n ----------
     const T = {
@@ -58,9 +58,12 @@ export default {
         canceled_ok: (d) => `🗑️ Бронь на ${d} снята.`,
         canceled_denied: (d) => `⛔ Вы не владелец брони ${d}.`,
         canceled_absent: (d) => `🙈 Брони на ${d} не найдено.`,
-        list_header: 'Занятые дни:',
+        list_header: '📅 Занятые дни:',
         wrong_format: 'Использование: /cancel YYYY-MM-DD',
         lang_set: (l) => `Язык чата: ${l}`,
+        refreshed: 'Список обновлён.',
+        open_calendar_btn: '📬 Открыть календарь',
+        refresh_btn: '🔄 Обновить список',
       },
       en: {
         open_in_dm: 'Open the calendar via the button — it will launch in DM:',
@@ -70,9 +73,12 @@ export default {
         canceled_ok: (d) => `🗑️ Booking for ${d} removed.`,
         canceled_denied: (d) => `⛔ You don’t own the booking for ${d}.`,
         canceled_absent: (d) => `🙈 No booking found for ${d}.`,
-        list_header: 'Booked days:',
+        list_header: '📅 Booked days:',
         wrong_format: 'Usage: /cancel YYYY-MM-DD',
         lang_set: (l) => `Chat language: ${l}`,
+        refreshed: 'List refreshed.',
+        open_calendar_btn: '📬 Open Calendar',
+        refresh_btn: '🔄 Refresh list',
       },
       ja: {
         open_in_dm: 'ボタンから開くとDMで起動します：',
@@ -82,15 +88,13 @@ export default {
         canceled_ok: (d) => `🗑️ ${d} の予約を取り消しました。`,
         canceled_denied: (d) => `⛔ ${d} の予約者ではありません。`,
         canceled_absent: (d) => `🙈 ${d} の予約は見つかりません。`,
-        list_header: '予約済みの日付：',
+        list_header: '📅 予約済みの日付：',
         wrong_format: '使い方: /cancel YYYY-MM-DD',
         lang_set: (l) => `チャットの言語: ${l}`,
+        refreshed: '更新しました。',
+        open_calendar_btn: '📬 カレンダーを開く',
+        refresh_btn: '🔄 リフレッシュ',
       },
-    };
-
-    const tr = (t, key, ...args) => {
-      const v = t[key];
-      return typeof v === 'function' ? v(...args) : v;
     };
 
     const getT = async (env, chatId) => {
@@ -101,6 +105,11 @@ export default {
       } catch { return T.ru; }
     };
 
+    const tr = (t, key, ...args) => {
+      const v = t[key];
+      return typeof v === 'function' ? v(...args) : v;
+    };
+
     const setLang = async (env, chatId, lang) => {
       if (!['ru','en','ja'].includes(lang)) return;
       await env.DB.prepare(
@@ -108,22 +117,30 @@ export default {
       ).bind(String(chatId), lang).run();
     };
 
-    // ---------- data helpers ----------
+    // ---------- data ----------
     const getBookings = async (env, chatId) => {
       return (await env.DB
         .prepare('SELECT date, user_name FROM bookings WHERE chat_id=? ORDER BY date')
         .bind(String(chatId)).all()).results || [];
     };
 
-    // ---------- auth helpers ----------
+    const renderListText = async (env, chatId, t) => {
+      const rows = await getBookings(env, chatId);
+      if (!rows.length) return tr(t,'none');
+      return tr(t,'list_header') + '\n' + rows.map(r => `${r.date} — ${r.user_name}`).join('\n');
+    };
+
+    const deepLinkForChat = (env, chatId, topicId) => {
+      const payload = `G${chatId}` + (Number.isFinite(topicId) ? `_T${topicId}` : '');
+      return `https://t.me/${env.BOT_USERNAME}?start=${encodeURIComponent(payload)}`;
+    };
+
+    // ---------- auth ----------
     async function isAdminInChat(env, chat, from, sender_chat) {
-      // Анонимный админ: сообщение «от имени чата»
-      if (sender_chat && sender_chat.id === chat.id) return true;
-      // Обычный случай: проверяем статус через getChatMember
+      if (sender_chat && sender_chat.id === chat.id) return true; // анонимный админ (сообщение от имени чата)
       if (from?.id) {
         try {
-          const r = await api(env.BOT_TOKEN, 'getChatMember',
-            { chat_id: chat.id, user_id: from.id });
+          const r = await api(env.BOT_TOKEN, 'getChatMember', { chat_id: chat.id, user_id: from.id });
           const d = await r.json();
           const status = d?.result?.status;
           return (status === 'creator' || status === 'administrator');
@@ -135,7 +152,6 @@ export default {
     function isOwnerOfBooking(row, from) {
       const userId = from?.id ?? null;
       if (userId !== null && row.user_id === userId) return true;
-      // «Наследие»: ранние брони с user_id=0 — сверяем имя (без регистра)
       if (row.user_id === 0) {
         const a = (row.user_name || '').trim().toLowerCase();
         const b = (fullName(from) || '').trim().toLowerCase();
@@ -160,17 +176,14 @@ export default {
       }, null, 2), { headers: { 'content-type': 'application/json' }});
     }
 
-    // ---------- simulate-open (диагностика)
+    // ---------- simulate-open (diagnostic)
     if (req.method === 'GET' && url.pathname === '/simulate-open') {
       const chatId = url.searchParams.get('chat_id');
       const topicId = url.searchParams.get('topic_id');
       if (!chatId) return new Response('chat_id is required', { status: 400 });
-
-      const payload = `G${chatId}` + (topicId ? `_T${topicId}` : '');
-      const deepLink = `https://t.me/${env.BOT_USERNAME}?start=${encodeURIComponent(payload)}`;
-
+      const deepLink = deepLinkForChat(env, chatId, Number(topicId));
       await sendText(env, chatId, T.ru.open_in_dm, {
-        reply_markup: { inline_keyboard: [[{ text: '📬 Открыть в ЛС', url: deepLink }]] },
+        reply_markup: { inline_keyboard: [[{ text: T.ru.open_calendar_btn, url: deepLink }]] },
         ...threadExtra(Number(topicId))
       });
       return new Response('ok');
@@ -219,18 +232,18 @@ export default {
 
       let update; try { update = await req.json(); } catch { return new Response('ok'); }
       const msg = update?.message;
+      const cbq = update?.callback_query;
 
-      // /open → ссылка для открытия Mini App в ЛС
+      // ==== /open (group) → deep-link to DM with start payload
       if (msg?.text && /^\/open(\@\w+)?/.test(msg.text)) {
         const chat = msg.chat;
         const threadId = msg.message_thread_id;
         const t = await getT(env, chat.id);
 
         if (chat?.type === 'group' || chat?.type === 'supergroup') {
-          const payload = `G${chat.id}` + (threadId ? `_T${threadId}` : '');
-          const deepLink = `https://t.me/${env.BOT_USERNAME}?start=${encodeURIComponent(payload)}`;
+          const deepLink = deepLinkForChat(env, chat.id, threadId);
           await sendText(env, chat.id, tr(t,'open_in_dm'), {
-            reply_markup: { inline_keyboard: [[{ text: '📬 Открыть в ЛС', url: deepLink }]] },
+            reply_markup: { inline_keyboard: [[{ text: tr(t,'open_calendar_btn'), url: deepLink }]] },
             ...threadExtra(threadId)
           });
         } else {
@@ -239,7 +252,7 @@ export default {
         return new Response('ok');
       }
 
-      // /list → просто показать список (без закрепа)
+      // ==== /list (smart list with inline buttons)
       if (msg?.text && /^\/list(\@\w+)?/.test(msg.text)) {
         const chat = msg.chat;
         const threadId = msg.message_thread_id;
@@ -253,20 +266,25 @@ export default {
           await sendText(env, chat.id, '❗ DB binding отсутствует.', threadExtra(threadId));
           return new Response('ok');
         }
+
         try {
-          const rows = await getBookings(env, chat.id);
-          const text = rows.length
-            ? tr(t,'list_header') + '\n' + rows.map(r => `${r.date} — ${r.user_name}`).join('\n')
-            : tr(t,'none');
-          await sendText(env, chat.id, text, threadExtra(threadId));
+          const text = await renderListText(env, chat.id, t);
+          const deepLink = deepLinkForChat(env, chat.id, threadId);
+          const reply_markup = {
+            inline_keyboard: [
+              [{ text: tr(t,'refresh_btn'), callback_data: 'list:refresh' }],
+              [{ text: tr(t,'open_calendar_btn'), url: deepLink }]
+            ]
+          };
+          await sendText(env, chat.id, text, { ...threadExtra(threadId), reply_markup });
         } catch (e) {
-          console.error('D1 list fail', e);
+          console.error('list fail', e);
           await sendText(env, chat.id, '❗ Не удалось получить список (DB).', threadExtra(threadId));
         }
         return new Response('ok');
       }
 
-      // /lang ru|en|ja
+      // ==== /lang ru|en|ja
       if (msg?.text && /^\/lang(\@\w+)?\s+/.test(msg.text)) {
         const chat = msg.chat;
         const threadId = msg.message_thread_id;
@@ -279,7 +297,7 @@ export default {
         return new Response('ok');
       }
 
-      // /cancel YYYY-MM-DD  (владелец или админ; анонимные админы учитываются)
+      // ==== /cancel YYYY-MM-DD
       if (msg?.text && /^\/cancel(\@\w+)?\s+/.test(msg.text)) {
         const chat = msg.chat;
         const threadId = msg.message_thread_id;
@@ -314,7 +332,7 @@ export default {
         return new Response('ok');
       }
 
-      // /start в ЛС → web_app-кнопка
+      // ==== /start in DM → Mini App button
       if (msg?.text && /^\/start/.test(msg.text) && msg.chat?.type === 'private') {
         const arg = msg.text.split(' ', 2)[1] || '';
         const m = arg.match(/^G(-?\d+)(?:_T(\d+))?$/);
@@ -335,13 +353,12 @@ export default {
             reply_markup: { inline_keyboard: [[{ text: '📅 Open Calendar', web_app: { url: openUrl } }]] }
           });
         } else {
-          await sendText(env, msg.chat.id,
-            'Это приватный чат с ботом. Запустите /open в группе, чтобы получить ссылку сюда.');
+          await sendText(env, msg.chat.id, 'Это приватный чат с ботом. Запустите /open в группе, чтобы получить ссылку сюда.');
         }
         return new Response('ok');
       }
 
-      // WebApp → sendData
+      // ==== WebApp sendData (primary path)
       if (msg?.web_app_data?.data) {
         try {
           const p = JSON.parse(msg.web_app_data.data);
@@ -369,6 +386,33 @@ export default {
             await sendText(env, chat_id, tr(t,'busy', date, row?.user_name || 'кто-то'), threadExtra(topicIdNum));
           }
         } catch (e) { console.error('web_app_data parse fail', e); }
+        return new Response('ok');
+      }
+
+      // ==== callback_query: list refresh
+      if (cbq?.data === 'list:refresh' && cbq.message) {
+        const chat = cbq.message.chat;
+        const threadId = cbq.message.message_thread_id;
+        const t = await getT(env, chat.id);
+        try {
+          const text = await renderListText(env, chat.id, t);
+          await api(env.BOT_TOKEN, 'editMessageText', {
+            chat_id: chat.id,
+            message_id: cbq.message.message_id,
+            text,
+            parse_mode: 'HTML',
+            disable_web_page_preview: true
+          });
+        } catch (e) {
+          console.error('callback refresh fail', e);
+        } finally {
+          // Всегда отвечаем на callback, чтобы убрать «часики»
+          await api(env.BOT_TOKEN, 'answerCallbackQuery', {
+            callback_query_id: cbq.id,
+            text: tr(t,'refreshed'),
+            show_alert: false
+          });
+        }
         return new Response('ok');
       }
 
