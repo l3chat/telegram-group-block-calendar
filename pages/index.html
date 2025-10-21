@@ -4,16 +4,19 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Group Calendar</title>
+
   <!-- FullCalendar -->
   <link href="https://cdn.jsdelivr.net/npm/fullcalendar@6.1.15/index.global.min.css" rel="stylesheet">
   <script src="https://cdn.jsdelivr.net/npm/fullcalendar@6.1.15/index.global.min.js"></script>
+
   <!-- Telegram WebApp SDK -->
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
+
   <style>
     :root {
-      --mine-bg: #c8f7c5;    /* мягкий зелёный для своих */
+      --mine-bg: #c8f7c5;    /* зелёный — мои */
       --mine-border: #2e7d32;
-      --theirs-bg: #ffd6cc;  /* мягкий коралловый для чужих */
+      --theirs-bg: #ffd6cc;  /* коралловый — чужие */
       --theirs-border: #c62828;
     }
     body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 0; background:#fff; }
@@ -23,7 +26,7 @@
     .dot { width:14px; height:14px; border-radius:4px; border:1px solid; display:inline-block; }
     .dot.mine   { background: var(--mine-bg);   border-color: var(--mine-border); }
     .dot.theirs { background: var(--theirs-bg); border-color: var(--theirs-border); }
-    /* Окраска событий по классам */
+
     .fc-event.mine {
       background: var(--mine-bg) !important;
       border-color: var(--mine-border) !important;
@@ -36,13 +39,10 @@
       color:#2b0d0d !important;
       font-weight: 600;
     }
-    /* Кнопка подтверждения */
-    .actions { display:flex; justify-content:center; margin-top:12px; }
-    .btn {
-      padding:10px 14px; border-radius:10px; border:1px solid #ccc; background:#f9f9f9; cursor:pointer;
-      font-weight:600;
-    }
-    .btn[disabled] { opacity: .5; cursor: not-allowed; }
+
+    .actions { display:flex; justify-content:center; margin-top:12px; gap:8px; }
+    .btn { padding:10px 14px; border-radius:10px; border:1px solid #ccc; background:#f9f9f9; cursor:pointer; font-weight:600; }
+    .btn[disabled] { opacity:.5; cursor: not-allowed; }
   </style>
 </head>
 <body>
@@ -54,38 +54,47 @@
     <div id="calendar"></div>
     <div class="actions">
       <button id="confirm" class="btn" disabled>✅ Подтвердить бронь выбранного дня</button>
+      <button id="refresh" class="btn">🔄 Обновить</button>
     </div>
   </div>
 
   <script>
-    // --- ПАРАМЕТРЫ И URLЫ ----------------------------------------------------
+    // --- Telegram init (тема/готовность)
+    try { Telegram.WebApp.ready?.(); Telegram.WebApp.expand?.(); } catch {}
+
     const qs = new URLSearchParams(location.search);
     const CHAT_ID  = qs.get('chat_id');          // группа/тема
     const TOPIC_ID = qs.get('topic_id') || '';   // опционально
-    const INGEST   = qs.get('ingest');           // наш fallback POST endpoint из воркера
-    const UID      = Number(qs.get('uid') || '0');
-    const UNAME    = qs.get('uname') || 'через WebApp';
+    const INGEST   = qs.get('ingest') || '';     // POST для создания
+    const UID_QS   = Number(qs.get('uid') || '0');
+    const UNAME_QS = qs.get('uname') || 'через WebApp';
 
-    // База API воркера: из ingest отрезаем "/ingest"
+    // Если запустили в группе через web_app-кнопку, у нас ещё есть initDataUnsafe
+    const init = (window.Telegram && Telegram.WebApp && Telegram.WebApp.initDataUnsafe) || {};
+    const fromUnsafe = init.user || null;
+
+    const UID   = fromUnsafe?.id ?? UID_QS;
+    const UNAME = (fromUnsafe ? [fromUnsafe.first_name, fromUnsafe.last_name].filter(Boolean).join(' ').trim() : UNAME_QS) || 'через WebApp';
+
+    // base URL воркера берём из ingest (срезаем /ingest)
     let apiBase = '';
     try {
       const u = new URL(INGEST);
-      apiBase = u.origin;                         // https://<worker>...
-      if (u.pathname && u.pathname !== '/') {
-        apiBase += u.pathname.replace(/\/ingest\/?$/, ''); // убрать хвост /ingest
-      }
-    } catch { /* оставим пусто, если ingest не передан */ }
+      apiBase = u.origin + u.pathname.replace(/\/ingest\/?$/, '');
+    } catch {}
 
-    // Ручка JSON со списком броней
     const BOOKINGS_URL = apiBase ? `${apiBase}/bookings?chat_id=${encodeURIComponent(CHAT_ID)}` : '';
+    const CANCEL_URL   = apiBase ? `${apiBase}/cancel_api` : '';
 
-    // --- СОСТОЯНИЕ -----------------------------------------------------------
-    const bookedMap = new Map();   // 'YYYY-MM-DD' -> { user_id, user_name }
-    let selectedDate = null;       // ISO 'YYYY-MM-DD'
+    const calendarEl = document.getElementById('calendar');
+    const confirmBtn = document.getElementById('confirm');
+    const refreshBtn = document.getElementById('refresh');
 
-    // --- ПОЛЕЗНЯШКИ ----------------------------------------------------------
+    const bookedMap = new Map();  // 'YYYY-MM-DD' -> { user_id, user_name }
+    let selectedDate = null;
+    let calendar = null;
+
     function toISODate(d) {
-      // Date | string → "YYYY-MM-DD" (локаль неважна — UTC дата)
       const dt = (d instanceof Date) ? d : new Date(d);
       const y = dt.getFullYear();
       const m = String(dt.getMonth() + 1).padStart(2, '0');
@@ -93,138 +102,165 @@
       return `${y}-${m}-${dd}`;
     }
 
-    // --- ЗАГРУЗКА БРОНЕЙ И КОНВЕРТАЦИЯ В СОБЫТИЯ ------------------------------
-    async function loadBookings() {
+    async function fetchBookings() {
       bookedMap.clear();
       if (!BOOKINGS_URL) return [];
-
       const res = await fetch(BOOKINGS_URL, { mode: 'cors' });
       const data = await res.json().catch(() => ({}));
       const arr = Array.isArray(data.bookings) ? data.bookings : [];
-
       for (const b of arr) {
         if (!b.date) continue;
         bookedMap.set(String(b.date), { user_id: Number(b.user_id || 0), user_name: b.user_name || '—' });
       }
+      return arr;
+    }
 
-      // В FullCalendar событие = однодневная «встреча» с заголовком = имя пользователя
-      // Раскрасим по владельцу (mine/theirs) — дальше классы задают цвета
-      const events = arr.map(b => {
+    function toEvents(arr) {
+      return arr.map(b => {
         const mine = Number(b.user_id || 0) === UID;
         return {
           id: `d:${b.date}`,
           title: b.user_name || '—',
           start: b.date,
-          end: b.date,           // allDay=true → end трактуется как эксклюзивная, но для дня так ок
+          end: b.date,
           allDay: true,
           display: 'block',
           classNames: [ mine ? 'mine' : 'theirs' ]
         };
       });
-
-      return events;
     }
 
-    // --- ИНИЦИАЛИЗАЦИЯ КАЛЕНДАРЯ ---------------------------------------------
-    const calendarEl = document.getElementById('calendar');
-    const confirmBtn = document.getElementById('confirm');
+    async function reloadEvents() {
+      const arr = await fetchBookings();
+      const events = toEvents(arr);
+      calendar.removeAllEvents();
+      calendar.addEventSource(events);
+      calendar.render();
+    }
 
-    async function init() {
-      const initialEvents = await loadBookings();
+    function showPopup(title, message, buttons=[]) {
+      if (Telegram?.WebApp?.showPopup) {
+        Telegram.WebApp.showPopup({ title, message, buttons: buttons.length ? buttons : [{type:'close'}] });
+      } else {
+        alert(`${title}\n\n${message}`);
+      }
+    }
 
-      const calendar = new FullCalendar.Calendar(calendarEl, {
+    async function initCalendar() {
+      const initial = toEvents(await fetchBookings());
+
+      calendar = new FullCalendar.Calendar(calendarEl, {
         initialView: 'dayGridMonth',
         height: 'auto',
         selectable: true,
-        selectMirror: true,
-        // Запрещаем выделение уже занятых дней
-        selectAllow: (info) => {
-          const day = toISODate(info.start);
-          return !bookedMap.has(day);
-        },
-        // Подсказка при клике по занятому дню
+        selectAllow: (info) => !bookedMap.has(toISODate(info.start)),
         dateClick: (arg) => {
           const day = toISODate(arg.date);
-          if (bookedMap.has(day)) {
-            const who = bookedMap.get(day);
-            window.Telegram?.WebApp?.showPopup?.({
-              title: 'День занят',
-              message: `${day} уже занят (${who.user_name}).`,
-              buttons: [{type:'close'}]
-            });
+          const b = bookedMap.get(day);
+          if (b) {
+            // Занято. Если это моя бронь — предложим снять.
+            if (Number(b.user_id) === UID) {
+              showPopup('Мой занятый день', `${day} — ваша бронь (${b.user_name}). Снять?`, [
+                { id:'cancel', type:'default', text:'Снять бронь' },
+                { type:'close', text:'Закрыть' }
+              ]);
+              // перехватим result через onEvent
+              Telegram?.WebApp?.onEvent?.('popupClosed', async (ev) => {
+                // В новом SDK popupClosed содержит button_id; подстрахуемся
+                const bid = ev?.button_id || ev?.buttonId;
+                if (bid === 'cancel') {
+                  await cancelBooking(day);
+                }
+              });
+            } else {
+              showPopup('День занят', `${day} уже занят (${b.user_name}).`);
+            }
             return;
           }
         },
         select: (info) => {
-          // Разрешено selectAllow → значит день свободен
           selectedDate = toISODate(info.start);
           confirmBtn.disabled = !selectedDate;
-          // лёгкая подсветка выбранного диапазона FullCalendar сделает сам
         },
-        unselect: () => {
-          selectedDate = null;
-          confirmBtn.disabled = true;
-        },
-        events: initialEvents,
-        // Немного прибираем визуал
-        headerToolbar: {
-          left: 'prev,next today',
-          center: 'title',
-          right: ''
-        }
+        unselect: () => { selectedDate = null; confirmBtn.disabled = true; },
+        events: initial,
+        headerToolbar: { left:'prev,next today', center:'title', right:'' }
       });
 
       calendar.render();
-
-      // Кнопка "Подтвердить бронь"
-      confirmBtn.addEventListener('click', async () => {
-        if (!selectedDate) return;
-        if (bookedMap.has(selectedDate)) {
-          const who = bookedMap.get(selectedDate);
-          window.Telegram?.WebApp?.showPopup?.({
-            title: 'День занят',
-            message: `${selectedDate} уже занят (${who.user_name}).`,
-            buttons: [{type:'close'}]
-          });
-          return;
-        }
-
-        // Шлём в бот (WebApp → sendData) — основной канал
-        const payload = {
-          type: 'book',
-          chat_id: CHAT_ID,
-          topic_id: TOPIC_ID || undefined,
-          date: selectedDate,
-          user_id: UID || 0,
-          user_name: UNAME || 'через WebApp'
-        };
-
-        try {
-          // Если доступен Telegram WebApp — используем sendData
-          if (window.Telegram && Telegram.WebApp && Telegram.WebApp.sendData) {
-            Telegram.WebApp.sendData(JSON.stringify(payload));
-            Telegram.WebApp.close?.();
-          } else if (INGEST) {
-            // Fallback: POST /ingest
-            await fetch(INGEST, {
-              method: 'POST',
-              headers: { 'content-type': 'application/json' },
-              body: JSON.stringify(payload)
-            });
-            // Сообщение пользователю и локальное обновление
-            alert('Бронь отправлена.');
-          }
-        } catch (e) {
-          console.error('send booking fail', e);
-          alert('Не удалось отправить бронь.');
-        }
-      });
-
-      // Опционально: Telegram theme aware
-      try { Telegram.WebApp.ready?.(); } catch {}
     }
 
-    init();
+    async function bookSelected() {
+      if (!selectedDate) return;
+
+      // Попытка послать через sendData (если запущено как WebApp)
+      const payload = {
+        type: 'book',
+        chat_id: CHAT_ID,
+        topic_id: TOPIC_ID || undefined,
+        date: selectedDate,
+        user_id: UID || 0,
+        user_name: UNAME || 'через WebApp'
+      };
+
+      let ok = false;
+      try {
+        if (Telegram?.WebApp?.sendData) {
+          Telegram.WebApp.sendData(JSON.stringify(payload));
+          ok = true;
+        }
+      } catch {}
+
+      // Fallback — прямой POST в воркер
+      if (!ok && INGEST) {
+        try {
+          await fetch(INGEST, {
+            method:'POST', headers:{'content-type':'application/json'},
+            body: JSON.stringify(payload)
+          });
+          ok = true;
+        } catch {}
+      }
+
+      if (ok) {
+        selectedDate = null;
+        confirmBtn.disabled = true;
+        await reloadEvents();
+        showPopup('Готово', 'Бронь сохранена.');
+        Telegram?.WebApp?.close?.(); // можно закрыть, если хочется
+      } else {
+        showPopup('Ошибка', 'Не удалось отправить бронь.');
+      }
+    }
+
+    async function cancelBooking(day) {
+      if (!CANCEL_URL) return showPopup('Ошибка', 'Нет API для отмены.');
+      try {
+        const r = await fetch(CANCEL_URL, {
+          method:'POST', headers:{'content-type':'application/json'},
+          body: JSON.stringify({ chat_id: CHAT_ID, date: day, user_id: UID })
+        });
+        const j = await r.json();
+        if (j?.ok) {
+          await reloadEvents();
+          showPopup('Снято', `Бронь на ${day} удалена.`);
+        } else if (j?.error === 'forbidden') {
+          showPopup('Нет прав', 'Эту бронь может снять только владелец или админ.');
+        } else if (j?.error === 'not-found') {
+          showPopup('Нет брони', 'На эту дату нет брони.');
+        } else {
+          showPopup('Ошибка', 'Не удалось снять бронь.');
+        }
+      } catch {
+        showPopup('Ошибка', 'Сеть недоступна.');
+      }
+    }
+
+    // init
+    await initCalendar();
+
+    confirmBtn.addEventListener('click', bookSelected);
+    refreshBtn.addEventListener('click', reloadEvents);
   </script>
 </body>
 </html>
