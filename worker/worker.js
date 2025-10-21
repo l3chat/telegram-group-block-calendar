@@ -225,6 +225,36 @@ export default {
       }
     }
 
+
+
+    // ---------- JSON: список броней для календаря (CORS)
+if (req.method === 'GET' && url.pathname === '/bookings') {
+  const chatId = url.searchParams.get('chat_id');
+  if (!chatId) {
+    return new Response(JSON.stringify({ ok:false, error:'chat_id is required' }), {
+      status: 400,
+      headers: { 'content-type': 'application/json', ...cors }
+    });
+  }
+  try {
+    const rows = (await env.DB
+      .prepare('SELECT date, user_id, user_name FROM bookings WHERE chat_id=? ORDER BY date')
+      .bind(String(chatId)).all()).results || [];
+    return new Response(JSON.stringify({ ok:true, chat_id: String(chatId), bookings: rows }), {
+      headers: { 'content-type': 'application/json', ...cors }
+    });
+  } catch (e) {
+    console.error('bookings json fail', e);
+    return new Response(JSON.stringify({ ok:false }), {
+      status: 500,
+      headers: { 'content-type': 'application/json', ...cors }
+    });
+  }
+}
+
+
+
+
     // ---------- Telegram webhook ----------
     if (req.method === 'POST' && url.pathname.startsWith('/webhook/')) {
       const pathToken = url.pathname.split('/').pop();

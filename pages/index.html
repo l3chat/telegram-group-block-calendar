@@ -1,137 +1,230 @@
 <!doctype html>
 <html lang="ru">
 <head>
-  <meta charset="utf-8"/>
-  <meta name="viewport" content="width=device-width,initial-scale=1"/>
-  <title>Group BCalendar (Telegram Mini App)</title>
-
-  <!-- Telegram Mini Apps JS -->
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Group Calendar</title>
+  <!-- FullCalendar -->
+  <link href="https://cdn.jsdelivr.net/npm/fullcalendar@6.1.15/index.global.min.css" rel="stylesheet">
+  <script src="https://cdn.jsdelivr.net/npm/fullcalendar@6.1.15/index.global.min.js"></script>
+  <!-- Telegram WebApp SDK -->
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
-
-  <!-- FullCalendar (CDN) -->
-  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/fullcalendar/6.1.19/index.global.min.css"/>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/fullcalendar/6.1.19/index.global.min.js"></script>
-
   <style>
-    html, body { height:100%; margin:0; font-family:system-ui, sans-serif; }
-    #wrap { padding: 12px; max-width: 980px; margin: 0 auto; }
-    #warn { padding: 8px 12px; border-radius: 8px; background:#fff3cd; color:#664d03; display:none; }
-    #calendar { margin-top: 8px; }
-    .muted { color:#6b7280; font-size: 0.9rem; }
+    :root {
+      --mine-bg: #c8f7c5;    /* мягкий зелёный для своих */
+      --mine-border: #2e7d32;
+      --theirs-bg: #ffd6cc;  /* мягкий коралловый для чужих */
+      --theirs-border: #c62828;
+    }
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 0; background:#fff; }
+    .wrap { max-width: 920px; margin: 0 auto; padding: 10px 12px 24px; }
+    #legend { display:flex; gap:16px; align-items:center; font-size:14px; margin: 6px 2px 10px; color:#333; }
+    .pill { display:inline-flex; align-items:center; gap:8px; }
+    .dot { width:14px; height:14px; border-radius:4px; border:1px solid; display:inline-block; }
+    .dot.mine   { background: var(--mine-bg);   border-color: var(--mine-border); }
+    .dot.theirs { background: var(--theirs-bg); border-color: var(--theirs-border); }
+    /* Окраска событий по классам */
+    .fc-event.mine {
+      background: var(--mine-bg) !important;
+      border-color: var(--mine-border) !important;
+      color:#102a10 !important;
+      font-weight: 600;
+    }
+    .fc-event.theirs {
+      background: var(--theirs-bg) !important;
+      border-color: var(--theirs-border) !important;
+      color:#2b0d0d !important;
+      font-weight: 600;
+    }
+    /* Кнопка подтверждения */
+    .actions { display:flex; justify-content:center; margin-top:12px; }
+    .btn {
+      padding:10px 14px; border-radius:10px; border:1px solid #ccc; background:#f9f9f9; cursor:pointer;
+      font-weight:600;
+    }
+    .btn[disabled] { opacity: .5; cursor: not-allowed; }
   </style>
 </head>
 <body>
-<div id="wrap">
-  <h3>Групповой календарь</h3>
-  <div id="warn">Похоже, календарь открыт не через Telegram. Вернись в чат и нажми кнопку бота “📅 Open Calendar”.</div>
-  <p class="muted">Коснись даты, затем нажми зелёную кнопку снизу (системная кнопка Telegram).</p>
-  <div id="calendar"></div>
-</div>
+  <div class="wrap">
+    <div id="legend">
+      <span class="pill"><span class="dot mine"></span> Мои брони</span>
+      <span class="pill"><span class="dot theirs"></span> Чужие брони</span>
+    </div>
+    <div id="calendar"></div>
+    <div class="actions">
+      <button id="confirm" class="btn" disabled>✅ Подтвердить бронь выбранного дня</button>
+    </div>
+  </div>
 
-<script>
-  // --- Telegram bootstrap ---
-  const tg = window.Telegram?.WebApp || null;
-  if (tg) {
-    try { tg.ready(); } catch {}
-    try { tg.expand(); } catch {}
-    document.body.style.background = tg.themeParams?.bg_color || "#fff";
-  } else {
-    document.getElementById('warn').style.display = 'block';
-  }
+  <script>
+    // --- ПАРАМЕТРЫ И URLЫ ----------------------------------------------------
+    const qs = new URLSearchParams(location.search);
+    const CHAT_ID  = qs.get('chat_id');          // группа/тема
+    const TOPIC_ID = qs.get('topic_id') || '';   // опционально
+    const INGEST   = qs.get('ingest');           // наш fallback POST endpoint из воркера
+    const UID      = Number(qs.get('uid') || '0');
+    const UNAME    = qs.get('uname') || 'через WebApp';
 
-  const qp       = new URLSearchParams(location.search);
-  const chatId   = qp.get("chat_id");
-  const topicId  = qp.get("topic_id");             // может быть null
-  const ingestUrl= qp.get("ingest");               // URL воркера /ingest (может быть null)
-
-  // Пользователь из окружения Mini App
-  const tgUser   = window.Telegram?.WebApp?.initDataUnsafe?.user || null;
-  const tg_uid   = tgUser?.id ?? null;
-  const tg_name  = tgUser
-    ? ([tgUser.first_name, tgUser.last_name].filter(Boolean).join(' ').trim()
-       || (tgUser.username ? '@' + tgUser.username : null))
-    : null;
-
-  // Подсказка из deep-link (воркер добавляет uid/uname)
-  const hint_uid  = qp.get('uid');
-  const hint_name = qp.get('uname');
-
-  // Итоговая идентичность
-  const user_id   = tg_uid ?? (hint_uid ? Number(hint_uid) : null);
-  const user_name = tg_name || (hint_name || null) || null;
-
-  let selectedDate = null;
-  let detachMainBtn = null;
-
-  function attachMainButton(handler) {
-    try { tg?.offEvent?.('mainButtonClicked', handler); } catch {}
-    try { tg?.MainButton?.offClick?.(handler); } catch {}
-    try { tg?.onEvent?.('mainButtonClicked', handler); } catch {}
-    try { tg?.MainButton?.onClick?.(handler); } catch {}
-    return () => {
-      try { tg?.offEvent?.('mainButtonClicked', handler); } catch {}
-      try { tg?.MainButton?.offClick?.(handler); } catch {}
-    };
-  }
-
-  function showMainButton(dateStr) {
-    if (!tg) return;
-    selectedDate = dateStr;
+    // База API воркера: из ingest отрезаем "/ingest"
+    let apiBase = '';
     try {
-      tg.MainButton.setText(`Забронировать ${selectedDate}`);
-      tg.MainButton.enable();
-      tg.MainButton.show();
-    } catch {}
+      const u = new URL(INGEST);
+      apiBase = u.origin;                         // https://<worker>...
+      if (u.pathname && u.pathname !== '/') {
+        apiBase += u.pathname.replace(/\/ingest\/?$/, ''); // убрать хвост /ingest
+      }
+    } catch { /* оставим пусто, если ingest не передан */ }
 
-    if (detachMainBtn) detachMainBtn();
-    detachMainBtn = attachMainButton(async () => {
-      if (!selectedDate) return;
+    // Ручка JSON со списком броней
+    const BOOKINGS_URL = apiBase ? `${apiBase}/bookings?chat_id=${encodeURIComponent(CHAT_ID)}` : '';
 
-      const payload = {
-        type: 'book',
-        chat_id: chatId,
-        topic_id: topicId,
-        date: selectedDate,
-        user_id: user_id,
-        user_name: user_name
-      };
+    // --- СОСТОЯНИЕ -----------------------------------------------------------
+    const bookedMap = new Map();   // 'YYYY-MM-DD' -> { user_id, user_name }
+    let selectedDate = null;       // ISO 'YYYY-MM-DD'
 
-      // 1) основной путь Mini Apps
-      try { tg.sendData(JSON.stringify(payload)); } catch {}
+    // --- ПОЛЕЗНЯШКИ ----------------------------------------------------------
+    function toISODate(d) {
+      // Date | string → "YYYY-MM-DD" (локаль неважна — UTC дата)
+      const dt = (d instanceof Date) ? d : new Date(d);
+      const y = dt.getFullYear();
+      const m = String(dt.getMonth() + 1).padStart(2, '0');
+      const dd = String(dt.getDate()).padStart(2, '0');
+      return `${y}-${m}-${dd}`;
+    }
 
-      // 2) резерв — прямой POST на воркер (/ingest) с CORS
-      if (ingestUrl) {
-        try {
-          await fetch(ingestUrl, {
-            method: 'POST',
-            headers: { 'content-type': 'application/json' },
-            body: JSON.stringify(payload)
-          });
-        } catch {}
+    // --- ЗАГРУЗКА БРОНЕЙ И КОНВЕРТАЦИЯ В СОБЫТИЯ ------------------------------
+    async function loadBookings() {
+      bookedMap.clear();
+      if (!BOOKINGS_URL) return [];
+
+      const res = await fetch(BOOKINGS_URL, { mode: 'cors' });
+      const data = await res.json().catch(() => ({}));
+      const arr = Array.isArray(data.bookings) ? data.bookings : [];
+
+      for (const b of arr) {
+        if (!b.date) continue;
+        bookedMap.set(String(b.date), { user_id: Number(b.user_id || 0), user_name: b.user_name || '—' });
       }
 
-      // 3) закрываем WebApp — помогает доставке на части клиентов
-      try { tg.close(); } catch {}
+      // В FullCalendar событие = однодневная «встреча» с заголовком = имя пользователя
+      // Раскрасим по владельцу (mine/theirs) — дальше классы задают цвета
+      const events = arr.map(b => {
+        const mine = Number(b.user_id || 0) === UID;
+        return {
+          id: `d:${b.date}`,
+          title: b.user_name || '—',
+          start: b.date,
+          end: b.date,           // allDay=true → end трактуется как эксклюзивная, но для дня так ок
+          allDay: true,
+          display: 'block',
+          classNames: [ mine ? 'mine' : 'theirs' ]
+        };
+      });
 
-      // визуальная обратная связь
-      try { tg.HapticFeedback?.impactOccurred?.('light'); } catch {}
-      try { tg.showPopup?.({ title: "Отправлено", message: `Дата: ${selectedDate}`, buttons:[{type:"close"}] }); } catch {}
-    });
-  }
+      return events;
+    }
 
-  document.addEventListener('DOMContentLoaded', () => {
+    // --- ИНИЦИАЛИЗАЦИЯ КАЛЕНДАРЯ ---------------------------------------------
     const calendarEl = document.getElementById('calendar');
-    const calendar = new FullCalendar.Calendar(calendarEl, {
-      initialView: 'dayGridMonth',
-      height: 'auto',
-      locale: 'ru',
-      selectable: true,
-      dateClick: (info) => { showMainButton(info.dateStr); },               // мобильный сценарий
-      select: (selectionInfo) => { showMainButton(selectionInfo.startStr); }, // десктоп
-      unselectAuto: true
-    });
-    calendar.render();
-  });
-</script>
+    const confirmBtn = document.getElementById('confirm');
+
+    async function init() {
+      const initialEvents = await loadBookings();
+
+      const calendar = new FullCalendar.Calendar(calendarEl, {
+        initialView: 'dayGridMonth',
+        height: 'auto',
+        selectable: true,
+        selectMirror: true,
+        // Запрещаем выделение уже занятых дней
+        selectAllow: (info) => {
+          const day = toISODate(info.start);
+          return !bookedMap.has(day);
+        },
+        // Подсказка при клике по занятому дню
+        dateClick: (arg) => {
+          const day = toISODate(arg.date);
+          if (bookedMap.has(day)) {
+            const who = bookedMap.get(day);
+            window.Telegram?.WebApp?.showPopup?.({
+              title: 'День занят',
+              message: `${day} уже занят (${who.user_name}).`,
+              buttons: [{type:'close'}]
+            });
+            return;
+          }
+        },
+        select: (info) => {
+          // Разрешено selectAllow → значит день свободен
+          selectedDate = toISODate(info.start);
+          confirmBtn.disabled = !selectedDate;
+          // лёгкая подсветка выбранного диапазона FullCalendar сделает сам
+        },
+        unselect: () => {
+          selectedDate = null;
+          confirmBtn.disabled = true;
+        },
+        events: initialEvents,
+        // Немного прибираем визуал
+        headerToolbar: {
+          left: 'prev,next today',
+          center: 'title',
+          right: ''
+        }
+      });
+
+      calendar.render();
+
+      // Кнопка "Подтвердить бронь"
+      confirmBtn.addEventListener('click', async () => {
+        if (!selectedDate) return;
+        if (bookedMap.has(selectedDate)) {
+          const who = bookedMap.get(selectedDate);
+          window.Telegram?.WebApp?.showPopup?.({
+            title: 'День занят',
+            message: `${selectedDate} уже занят (${who.user_name}).`,
+            buttons: [{type:'close'}]
+          });
+          return;
+        }
+
+        // Шлём в бот (WebApp → sendData) — основной канал
+        const payload = {
+          type: 'book',
+          chat_id: CHAT_ID,
+          topic_id: TOPIC_ID || undefined,
+          date: selectedDate,
+          user_id: UID || 0,
+          user_name: UNAME || 'через WebApp'
+        };
+
+        try {
+          // Если доступен Telegram WebApp — используем sendData
+          if (window.Telegram && Telegram.WebApp && Telegram.WebApp.sendData) {
+            Telegram.WebApp.sendData(JSON.stringify(payload));
+            Telegram.WebApp.close?.();
+          } else if (INGEST) {
+            // Fallback: POST /ingest
+            await fetch(INGEST, {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify(payload)
+            });
+            // Сообщение пользователю и локальное обновление
+            alert('Бронь отправлена.');
+          }
+        } catch (e) {
+          console.error('send booking fail', e);
+          alert('Не удалось отправить бронь.');
+        }
+      });
+
+      // Опционально: Telegram theme aware
+      try { Telegram.WebApp.ready?.(); } catch {}
+    }
+
+    init();
+  </script>
 </body>
 </html>
