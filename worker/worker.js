@@ -294,45 +294,48 @@ export default {
 
 
 
-      // /open → одна web_app-кнопка, строго в том же топике/в ответ на исходное
-      if (msg?.text && /^\/open(?:@\w+)?(?:\s|$)/i.test(msg.text)) {
-        const chat = msg.chat;
-        const threadId = msg.message_thread_id;     // если есть — укажем
-        const replyToId = msg.message_id;            // reply привяжет к тому же топику
-        const from = msg.from;
+// /open — корректная отправка без BUTTON_TYPE_INVALID
+if (msg?.text && /^\/open(?:@\w+)?(?:\s|$)/i.test(msg.text)) {
+  const chat     = msg.chat;
+  const threadId = msg.message_thread_id;
+  const from     = msg.from;
 
-        try {
-          if (chat?.type !== 'group' && chat?.type !== 'supergroup') {
-            await api(env.BOT_TOKEN, 'sendMessage', { chat_id: chat.id, text: 'Команду /open нужно вызывать в группе/теме.' });
-            return new Response('ok');
-          }
+  const pagesBase = (env.PAGES_URL || '').replace(/\/+$/,''); // https://...pages.dev
+  const ingest = `https://${url.host}/ingest`;
+  const baseUrl = `${pagesBase}/index.html?chat_id=${encodeURIComponent(chat.id)}`
+                + (threadId ? `&topic_id=${encodeURIComponent(threadId)}` : '')
+                + `&ingest=${encodeURIComponent(ingest)}`
+                + `&uid=${encodeURIComponent(String(from?.id || 0))}`
+                + `&uname=${encodeURIComponent(([from?.first_name, from?.last_name].filter(Boolean).join(' ') || (from?.username ? '@'+from.username : 'через WebApp')))}`;
 
-          const pagesBase = (env.PAGES_URL || '').replace(/\/+$/, '');
-          const ingest = `https://${url.host}/ingest`;
+  // deep-link в ЛС: там уже можно запустить WebApp
+  const deepLink = `https://t.me/${env.BOT_USERNAME}?start=${encodeURIComponent('G'+chat.id + (threadId ? '_T'+threadId : ''))}`;
 
-          const webappUrl = `${pagesBase}/index.html?chat_id=${encodeURIComponent(chat.id)}`
-            + (threadId ? `&topic_id=${encodeURIComponent(threadId)}` : '')
-            + `&ingest=${encodeURIComponent(ingest)}`
-            + `&uid=${encodeURIComponent(String(from?.id || 0))}`
-            + `&uname=${encodeURIComponent(([from?.first_name, from?.last_name].filter(Boolean).join(' ') || (from?.username ? '@' + from.username : 'через WebApp')))}`;
-
-          const resp = await api(env.BOT_TOKEN, 'sendMessage', {
-            chat_id: chat.id,
-            text: 'Откройте календарь:',
-            reply_markup: { inline_keyboard: [[{ text: '📅 Открыть календарь здесь', web_app: { url: webappUrl } }]] },
-            ...(threadId ? { message_thread_id: threadId } : {}),
-            reply_to_message_id: replyToId,                  // <— главное: привязка к исходному
-            allow_sending_without_reply: true
-          });
-
-          const data = await resp.json().catch(() => null);
-          console.log('open/sendMessage resp:', data);
-        } catch (e) {
-          console.error('open handler fail', e);
-        }
-        return new Response('ok');
-      }
-
+  if (chat?.type === 'private') {
+    // ЛС: разрешена inline-кнопка web_app
+    const resp = await api(env.BOT_TOKEN, 'sendMessage', {
+      chat_id: chat.id,
+      text: 'Откройте календарь:',
+      reply_markup: { inline_keyboard: [[{ text: '📅 Открыть календарь', web_app: { url: baseUrl } }]] }
+    });
+    console.log('open/private resp:', await resp.json().catch(()=>null));
+  } else {
+    // Группа/супергруппа: НЕЛЬЗЯ web_app → даём deep-link в ЛС + обычную ссылку (браузер)
+    const resp = await api(env.BOT_TOKEN, 'sendMessage', {
+      chat_id: chat.id,
+      text: 'Откройте календарь:',
+      reply_markup: {
+        inline_keyboard: [
+          [{ text: '📬 Открыть в ЛС', url: deepLink }],
+          [{ text: '🌐 Открыть в браузере', url: baseUrl }]
+        ]
+      },
+      ...(threadId ? { message_thread_id: threadId } : {})
+    });
+    console.log('open/group resp:', await resp.json().catch(()=>null));
+  }
+  return new Response('ok');
+}
 
 
 
