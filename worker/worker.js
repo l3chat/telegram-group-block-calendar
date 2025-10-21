@@ -248,118 +248,138 @@ export default {
       }
     }
 
+
+
     // ---------- Telegram webhook ----------
-    if (req.method === 'POST' && url.pathname.startsWith('/webhook/')) {
-      const pathToken = url.pathname.split('/').pop();
-      if (!env.BOT_TOKEN || pathToken !== env.BOT_TOKEN) return new Response('ok');
+if (req.method === 'POST' && url.pathname.startsWith('/webhook/')) {
+  const pathToken = url.pathname.split('/').pop();
+  if (!env.BOT_TOKEN || pathToken !== env.BOT_TOKEN) return new Response('ok');
 
-      let update; try { update = await req.json(); } catch { return new Response('ok'); }
-      const msg = update?.message;
+  let update; try { update = await req.json(); } catch { return new Response('ok'); }
 
+  // Унифицированный доступ к "сообщению"
+  const msg = update.message
+           || update.channel_post
+           || update.edited_message
+           || update.edited_channel_post
+           || null;
 
-      // /open → одно сообщение с одной web_app-кнопкой (запуск в группе/теме)
-      if (msg?.text && /^\/open(?:@\w+)?(?:\s|$)/i.test(msg.text)) {
-        try {
-          const chat = msg.chat;
-          const threadId = msg.message_thread_id;
-          const from = msg.from;
-          const t = await getT(env, chat.id);
+  // Быстрый трейсовый лог, помогает понять что прилетает
+  try {
+    const kind = msg?.chat?.type || Object.keys(update)[0] || 'unknown';
+    console.log('tg-update kind=', kind, 'hasText=', !!msg?.text, 'hasEntities=', !!msg?.entities);
+  } catch {}
 
-          // Разрешаем только group/supergroup — в ЛС просим запустить в группе
-          if (chat?.type !== 'group' && chat?.type !== 'supergroup') {
-            await sendText(env, chat.id, 'Эта команда работает в группе/теме.');
-            return new Response('ok');
-          }
+  // Достаём текст команды безопасно через entities (bot_command)
+  function extractCommand(m) {
+    if (!m?.text || !Array.isArray(m.entities)) return null;
+    const ent = m.entities.find(e => e.type === 'bot_command' && e.offset === 0);
+    if (!ent) return null;
+    const raw = m.text.slice(0, ent.length);  // "/open" или "/open@BotName"
+    const tail = m.text.slice(ent.length).trim(); // всё после команды
+    return { raw, tail };
+  }
 
-          // Формируем URL мини-приложения с контекстом
-          const ingest = `https://${url.host}/ingest`;
-          const baseUrl = `${pagesBase}/index.html?chat_id=${chat.id}`
-            + (threadId ? `&topic_id=${threadId}` : '')
-            + `&ingest=${encodeURIComponent(ingest)}`
-            + `&uid=${encodeURIComponent(String(from?.id || 0))}`
-            + `&uname=${encodeURIComponent(fullName(from))}`;
+  // Помощники
+  const fullName = (u) => {
+    if (!u) return 'кто-то';
+    const s = [u.first_name, u.last_name].filter(Boolean).join(' ').trim();
+    return s || (u.username ? '@' + u.username : `id${u.id}`);
+  };
+  const threadExtra = (topicId) =>
+    Number.isFinite(topicId) ? { message_thread_id: topicId } : {};
 
-          // Отправляем ОДНО сообщение с ОДНОЙ web_app-кнопкой
-          await api(env.BOT_TOKEN, 'sendMessage', {
-            chat_id: chat.id,
-            text: 'Откройте календарь:',
-            reply_markup: { inline_keyboard: [[{ text: '📅 Открыть календарь здесь', web_app: { url: baseUrl } }]] },
-            ...(threadId ? { message_thread_id: threadId } : {})
-          });
+  // Команда
+  const cmd = extractCommand(msg);
 
-        } catch (e) {
-          // Журналируем, чтобы ловить «нет реакции»
-          console.error('open handler fail', e);
-        }
+  // ===== /open — одна web_app-кнопка "Открыть здесь"
+  if (cmd && /^\/open(?:@\w+)?$/i.test(cmd.raw)) {
+    try {
+      const chat     = msg.chat;
+      const threadId = msg.message_thread_id;
+      const from     = msg.from;
+
+      // Разрешаем только group/supergroup — именно там хотим «открывать здесь»
+      if (chat?.type !== 'group' && chat?.type !== 'supergroup') {
+        await fetch(`https://api.telegram.org/bot${env.BOT_TOKEN}/sendMessage`, {
+          method: 'POST', headers: {'content-type':'application/json'},
+          body: JSON.stringify({ chat_id: chat.id, text: 'Команда /open работает в группе/теме.' })
+        });
         return new Response('ok');
       }
 
+      // Строим URL Mini-App с контекстом
+      const ingest = `https://${url.host}/ingest`;
+      const baseUrl = `${(env.PAGES_URL || '').replace(/\/+$/,'')}/index.html?chat_id=${chat.id}`
+                    + (threadId ? `&topic_id=${threadId}` : '')
+                    + `&ingest=${encodeURIComponent(ingest)}`
+                    + `&uid=${encodeURIComponent(String(from?.id || 0))}`
+                    + `&uname=${encodeURIComponent(fullName(from))}`;
 
+      // Отправляем одно сообщение с одной web_app-кнопкой
+      await fetch(`https://api.telegram.org/bot${env.BOT_TOKEN}/sendMessage`, {
+        method: 'POST', headers: {'content-type':'application/json'},
+        body: JSON.stringify({
+          chat_id: chat.id,
+          text: 'Откройте календарь:',
+          reply_markup: { inline_keyboard: [[{ text: '📅 Открыть календарь здесь', web_app: { url: baseUrl } }]] },
+          ...(threadId ? { message_thread_id: threadId } : {})
+        })
+      });
 
-      // /list → просто текст
-      if (msg?.text && /^\/list(\@\w+)?/.test(msg.text)) {
-        const chat = msg.chat;
-        const threadId = msg.message_thread_id;
-        const t = await getT(env, chat.id);
+      console.log('open: sent web_app button to chat', chat.id, 'thread', threadId ?? null);
+    } catch (e) {
+      console.error('open handler fail', e);
+    }
+    return new Response('ok');
+  }
 
-        if (chat?.type !== 'group' && chat?.type !== 'supergroup') {
-          await sendText(env, chat.id, tr(t, 'none'));
-          return new Response('ok');
-        }
-        if (!env.DB) {
-          await sendText(env, chat.id, '❗ DB binding отсутствует.', threadExtra(threadId));
-          return new Response('ok');
-        }
-        try {
-          const rows = await getBookings(env, chat.id);
-          const text = rows.length
-            ? tr(t, 'list_header') + '\n' + rows.map(r => `${r.date} — ${r.user_name}`).join('\n')
-            : tr(t, 'none');
-          await sendText(env, chat.id, text, threadExtra(threadId));
-        } catch (e) {
-          console.error('D1 list fail', e);
-          await sendText(env, chat.id, '❗ Не удалось получить список (DB).', threadExtra(threadId));
-        }
-        return new Response('ok');
-      }
+  // ===== /list — оставить как было (простой текст)
+  if (cmd && /^\/list(?:@\w+)?$/i.test(cmd.raw)) {
+    const chat = msg.chat;
+    const threadId = msg.message_thread_id;
 
-      // /lang
-      if (msg?.text && /^\/lang(\@\w+)?\s+/.test(msg.text)) {
-        const chat = msg.chat;
-        const threadId = msg.message_thread_id;
-        const m = msg.text.trim().match(/^\/lang(?:@\w+)?\s+(ru|en|ja)$/i);
-        if (!m) { await sendText(env, chat.id, 'Usage: /lang ru|en|ja', threadExtra(threadId)); return new Response('ok'); }
-        const lang = m[1].toLowerCase();
-        if (env.DB) await setLang(env, chat.id, lang);
-        const t = await getT(env, chat.id);
-        await sendText(env, chat.id, tr(t, 'lang_set', lang), threadExtra(threadId));
-        return new Response('ok');
-      }
-
-      // WebApp sendData (DM / group) — оставляем как «доп канал» на будущее
-      if (msg?.web_app_data?.data) {
-        try {
-          const p = JSON.parse(msg.web_app_data.data);
-          if (p?.type !== 'book') return new Response('ok');
-
-          const chat_id = String(p.chat_id);
-          const date = String(p.date);
-          const uid = Number(p.user_id) || (msg.from?.id ?? 0);
-          const uname = (p.user_name && String(p.user_name).trim()) || fullName(msg.from);
-
-          if (!env.DB) return new Response('ok');
-
-          try {
-            await env.DB.prepare(
-              'INSERT INTO bookings(chat_id,date,user_id,user_name) VALUES (?1,?2,?3,?4)'
-            ).bind(chat_id, date, uid, uname).run();
-          } catch { }
-        } catch (e) { console.error('web_app_data parse fail', e); }
-        return new Response('ok');
-      }
-
+    if (chat?.type !== 'group' && chat?.type !== 'supergroup') {
+      await fetch(`https://api.telegram.org/bot${env.BOT_TOKEN}/sendMessage`, {
+        method: 'POST', headers: {'content-type':'application/json'},
+        body: JSON.stringify({ chat_id: chat.id, text: 'Пока нет броней.' })
+      });
       return new Response('ok');
     }
+
+    if (!env.DB) {
+      await fetch(`https://api.telegram.org/bot${env.BOT_TOKEN}/sendMessage`, {
+        method: 'POST', headers: {'content-type':'application/json'},
+        body: JSON.stringify({ chat_id: chat.id, text: '❗ DB binding отсутствует.', ...(threadId ? { message_thread_id: threadId } : {}) })
+      });
+      return new Response('ok');
+    }
+
+    try {
+      const rows = (await env.DB
+        .prepare('SELECT date, user_name FROM bookings WHERE chat_id=? ORDER BY date')
+        .bind(String(chat.id)).all()).results || [];
+      const text = rows.length
+        ? '📅 Занятые дни:\n' + rows.map(r => `${r.date} — ${r.user_name}`).join('\n')
+        : 'Пока нет броней.';
+      await fetch(`https://api.telegram.org/bot${env.BOT_TOKEN}/sendMessage`, {
+        method: 'POST', headers: {'content-type':'application/json'},
+        body: JSON.stringify({ chat_id: chat.id, text, ...(threadId ? { message_thread_id: threadId } : {}) })
+      });
+    } catch (e) {
+      console.error('D1 list fail', e);
+      await fetch(`https://api.telegram.org/bot${env.BOT_TOKEN}/sendMessage`, {
+        method: 'POST', headers: {'content-type':'application/json'},
+        body: JSON.stringify({ chat_id: chat.id, text: '❗ Не удалось получить список (DB).', ...(threadId ? { message_thread_id: threadId } : {}) })
+      });
+    }
+    return new Response('ok');
+  }
+
+  // Остальные вещи (web_app_data, ingest и т.п.) — оставьте как у вас ниже
+  return new Response('ok');
+}
+
 
     return new Response('Not found', { status: 404 });
   }
