@@ -193,6 +193,7 @@ export default {
       if (req.method === 'POST') {
         try {
           const p = await req.json();
+          console.log('ingest hit', { chat_id: p?.chat_id, date: p?.date, user_id: p?.user_id }); // <— лог
           if (p?.type !== 'book') return new Response('ok', { headers: cors });
 
           const chat_id = String(p.chat_id);

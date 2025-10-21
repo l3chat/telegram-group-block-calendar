@@ -259,7 +259,86 @@
       calendar.render();
     }
 
-    async function bookSelected() {
+
+
+  async function bookSelected() {
+    if (!selectedDate) {
+      showPopup('Нет даты', 'Сначала выберите свободный день.');
+      return;
+    }
+
+    const payload = {
+      type: 'book',
+      chat_id: CHAT_ID,
+      topic_id: TOPIC_ID || undefined,
+      date: selectedDate,
+      user_id: UID || 0,
+      user_name: UNAME || 'через WebApp'
+    };
+
+    console.log('[BOOK] intent', payload);
+
+    // 1) Попробуем через Telegram WebApp (если запущено в ЛС)
+    let delivered = false;
+    try {
+      if (window.Telegram?.WebApp?.sendData) {
+        Telegram.WebApp.sendData(JSON.stringify(payload));
+        delivered = true;
+        console.log('[BOOK] sent via sendData');
+      }
+    } catch (e) {
+      console.warn('[BOOK] sendData error', e);
+    }
+
+    // 2) Fallback: прямой POST в воркер (браузерный вариант «Открыть в браузере»)
+    if (!delivered) {
+      if (!INGEST) {
+        showPopup('Ошибка', 'Нет адреса сервера (ingest пуст). Откройте календарь из /open.');
+        return;
+      }
+      try {
+        const r = await fetch(INGEST, {
+          method: 'POST',
+          mode: 'cors',
+          credentials: 'omit',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(payload),
+          redirect: 'follow',
+          cache: 'no-cache'
+        });
+        console.log('[BOOK] fetch status', r.status);
+        delivered = r.ok;
+      } catch (e) {
+        console.error('[BOOK] fetch error', e);
+        delivered = false;
+      }
+    }
+
+    if (delivered) {
+      const day = selectedDate;
+      selectedDate = null;
+      confirmBtn.disabled = true;
+      await reloadEvents();
+      showPopup('Готово', `Бронь на ${day} сохранена.`);
+      // Telegram.WebApp.close?.(); // можешь вернуть, если хочешь автозакрытие
+    } else {
+      showPopup('Не отправлено', 'Похоже, сеть или доступ к серверу недоступны. Проверь логи.');
+    }
+  }
+
+
+
+
+  (async () => {
+    try { await initCalendar(); }
+    catch (e) { console.error('initCalendar failed', e); alert('Не удалось инициализировать календарь.'); return; }
+    confirmBtn.addEventListener('click', bookSelected);
+    refreshBtn.addEventListener('click', reloadEvents);
+  })();
+
+
+
+    async function bookSelectedOld() {
       if (!selectedDate) return;
 
       // Попытка послать через sendData (если запущено как WebApp)
