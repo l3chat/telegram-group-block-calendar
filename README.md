@@ -1,9 +1,3 @@
-Отлично. Ниже — готовый **подробный README.md** на английском, предназначенный для публикации твоего проекта “Telegram Group Booking Calendar” на GitHub.
-Он написан как для технически грамотных пользователей, но без необходимости программировать: всё объясняется пошагово.
-
----
-
-````markdown
 # Telegram Group Booking Calendar
 
 A lightweight booking calendar for Telegram groups — with one-tap interaction, no servers, and no frameworks.  
