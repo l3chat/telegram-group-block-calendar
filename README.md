@@ -1,90 +1,232 @@
-# Telegram Group Calendar (Mini App + Cloudflare Worker + D1)
+Отлично. Ниже — готовый **подробный README.md** на английском, предназначенный для публикации твоего проекта “Telegram Group Booking Calendar” на GitHub.
+Он написан как для технически грамотных пользователей, но без необходимости программировать: всё объясняется пошагово.
 
-A lightweight, serverless group calendar for Telegram. Members can book **one day per booking** (no overlaps), cancel with `/cancel`, and the bot maintains a **pinned “board”** with all bookings.  
-Frontend is a Telegram Mini App (Cloudflare Pages). Backend is a Cloudflare Worker with D1.
+---
 
-## Features
-- 📅 Book days via Mini App (WebApp) directly from Telegram.
-- 🗑️ `/cancel YYYY-MM-DD` — owners remove their booking; admins (incl. **anonymous admins** in supergroups) can remove any.
-- 📌 Auto-updated pinned board per chat/topic.
-- 🌐 Localization: `/lang ru|en|ja`.
-- 🔄 Fallback `/ingest` in case `sendData` fails.
+````markdown
+# Telegram Group Booking Calendar
 
-## Architecture
-- `pages/index.html` — Mini App UI (FullCalendar).
-- `worker/worker.js` — Telegram webhook + D1 logic + board management.
-- D1 tables:
+A lightweight booking calendar for Telegram groups — with one-tap interaction, no servers, and no frameworks.  
+Built with **Cloudflare Workers (serverless)**, **D1 database**, and a **static web app** on GitHub Pages (or Cloudflare Pages).
+
+---
+
+## 🌍 Overview
+
+This project provides a minimal, privacy-friendly way for Telegram group members to book and free days — for example, to schedule meetings, shifts, events, or shared resources — **without overlapping**.
+
+- Each participant can **book one or more days**.
+- Tapping an empty date creates a booking.
+- Tapping your own booking removes it.
+- Other members’ bookings are visible but not editable.
+- Works directly **inside Telegram** via WebApp or DM deep-link.
+- No separate backend, only Cloudflare Worker and D1 database.
+- 100% open source, ready for GitHub Pages.
+
+---
+
+## ✨ Features
+
+- ⚡ Instant booking / unbooking — one tap, no confirmations.
+- 📅 Real-time synchronization (reloads automatically after each action).
+- 👥 Supports multiple Telegram groups independently.
+- 🔐 Safe: each user can only modify their own bookings.
+- 🌐 Runs fully serverless on Cloudflare + GitHub Pages.
+- 📱 Works in private chats and group chats.
+- 🎨 Simple and clean UI with color legend:
+  - Green = your bookings
+  - Red = others’ bookings
+
+---
+
+## 🧩 Components
+
+| Component | Description |
+|------------|-------------|
+| **`index.html`** | The static calendar web app (served from GitHub Pages or Cloudflare Pages). |
+| **`worker.js`** | Cloudflare Worker script handling Telegram API, database, and REST endpoints. |
+| **D1 database** | Stores bookings: chat ID, date, user ID, and user name. |
+| **Telegram bot** | Communicates between Telegram and the Worker via webhook. |
+
+---
+
+## 🛠️ Installation Guide
+
+### 1. Clone the repository
+
+```bash
+git clone https://github.com/YOUR_USERNAME/telegram-group-calendar.git
+cd telegram-group-calendar
+````
+
+You’ll have these key files:
+
+```
+index.html        → The WebApp (UI)
+worker.js         → Cloudflare Worker
+```
+
+---
+
+### 2. Create a Telegram Bot
+
+1. Open [@BotFather](https://t.me/BotFather).
+2. Send `/newbot` and follow the instructions.
+3. Save your **bot token** (looks like `1234567890:ABC...`).
+4. Send `/setdomain` to BotFather and set the domain that your WebApp will use, for example:
+
+   ```
+   https://telegram-group-calendar.pages.dev
+   ```
+
+This allows Telegram to open your WebApp in inline mode.
+
+---
+
+### 3. Deploy the WebApp
+
+#### Option A — GitHub Pages
+
+1. Go to your repository → **Settings → Pages**.
+2. Under “Build and deployment”, choose **Deploy from branch**.
+3. Select branch `main` and folder `/ (root)`.
+4. Save — your site will be available at
+   `https://<your-username>.github.io/telegram-group-calendar/`.
+
+#### Option B — Cloudflare Pages (recommended)
+
+1. Go to [Cloudflare Pages](https://dash.cloudflare.com/).
+2. Click **Create a project → Connect to Git**.
+3. Select your repository and follow the prompts.
+4. Once deployed, note your site URL (e.g. `https://groupcal.pages.dev`).
+
+---
+
+### 4. Create a Cloudflare Worker
+
+1. Go to [Cloudflare Dashboard → Workers](https://dash.cloudflare.com/).
+2. Create a new Worker (e.g. `group-calendar`).
+3. Replace its content with `worker.js`.
+4. Bind the following environment variables:
+
+| Variable name  | Type   | Example                       |
+| -------------- | ------ | ----------------------------- |
+| `BOT_TOKEN`    | Secret | `1234567890:ABC...`           |
+| `BOT_USERNAME` | Text   | `GroupBookingBot` (without @) |
+| `PAGES_URL`    | Text   | `https://groupcal.pages.dev`  |
+
+---
+
+### 5. Add D1 Database
+
+1. In Cloudflare dashboard, go to **D1** → Create a new database.
+   Name it e.g. `calendar-db`.
+2. In the Worker’s “Settings → Bindings”, add a **D1 Database binding**:
+
+   ```
+   Variable name: DB
+   Database: calendar-db
+   ```
+3. Open the D1 console and run:
+
 ```sql
-  CREATE TABLE IF NOT EXISTS bookings(chat_id TEXT NOT NULL,date TEXT NOT NULL,user_id INTEGER NOT NULL,user_name TEXT,ts TEXT NOT NULL DEFAULT (datetime('now')),PRIMARY KEY(chat_id,date));
-
-  CREATE TABLE IF NOT EXISTS boards(chat_id TEXT NOT NULL,topic_id INTEGER,message_id INTEGER NOT NULL,PRIMARY KEY(chat_id,topic_id));
-
-  CREATE TABLE IF NOT EXISTS chat_prefs(chat_id TEXT PRIMARY KEY,lang TEXT NOT NULL DEFAULT 'ru');
-```
-
-## Deployment (short)
-
-1. **Cloudflare Pages** → connect this repo (Root directory: `pages`, no build commands).
-2. **Cloudflare D1** → create DB `calendar`, run SQL above, bind as `DB`.
-3. **Cloudflare Worker** → deploy `worker/worker.js`.
-
-   * Text vars: `BOT_USERNAME` (without @), `PAGES_URL` (your Pages URL).
-   * Secret: `BOT_TOKEN`.
-   * Bindings: D1 as `DB`.
-4. **Telegram**
-
-   * `@BotFather /setdomain` = your Mini App domain (Pages).
-   * Webhook: `https://<worker>.workers.dev/webhook/<BOT_TOKEN>`.
-5. In a group: `/open` → button in DM → “📅 Open Calendar”.
-
-## Notes
-
-* The pinned board requires `Pin messages` permission for the bot.
-* If the pinned message was deleted or the topic cleaned, the worker will re-create it (see `updateBoard` logic).
-* Supergroups with **anonymous admins** are supported (we detect by `sender_chat` or `getChatMember`).
-
----
-
-# Телеграм-групповой календарь (Mini App + Cloudflare Worker + D1)
-
-Небольшой серверлесс-календарь для групп: участники бронируют **дни без пересечений**, снимают бронь `/cancel`, бот ведёт **закреп-“доску”** со списком броней.
-
-## Возможности
-
-* 📅 Бронирование дат через Mini App в ЛС.
-* 🗑️ `/cancel YYYY-MM-DD` — владелец снимает свою; админ (вкл. анонимного) снимает любую.
-* 📌 Автообновляемая закреп-доска в чате/теме.
-* 🌐 `/lang ru|en|ja`.
-* 🔄 Fallback `/ingest` на случай падения `sendData`.
-
-## Архитектура
-
-* `pages/index.html` — UI (FullCalendar).
-* `worker/worker.js` — Webhook + D1 + логика доски.
-* Таблицы D1 см. выше (тот же SQL).
-
-## Деплой (кратко)
-
-1. **Pages:** репозиторий → Root `pages`, без сборки.
-2. **D1:** создать `calendar`, выполнить SQL, привязать как `DB`.
-3. **Worker:** задеплоить `worker.js`, задать `BOT_USERNAME`, `PAGES_URL`, секрет `BOT_TOKEN`, привязать `DB`.
-4. **Telegram:** `/setdomain` = адрес Pages; webhook на воркер `/webhook/<BOT_TOKEN>`.
-5. В группе: `/open` → кнопка в ЛС → «📅 Open Calendar».
-
-## Важные заметки
-
-* Для закрепа у бота должно быть право **Pin messages**.
-* Если закреп потерян, `updateBoard()` создаст новый и обновит БД.
-* В супергруппах с анонимностью админов удаление через `/cancel` работает (см. `isAdminInChat`).
-
-## License
-
-MIT — see `LICENSE`.
-
+CREATE TABLE IF NOT EXISTS bookings(
+  chat_id   TEXT NOT NULL,
+  date      TEXT NOT NULL,
+  user_id   INTEGER NOT NULL,
+  user_name TEXT,
+  ts        TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY(chat_id, date)
+);
 ```
 
 ---
 
-Если захочешь — могу сгенерировать **pull-request diff** (пара патчей: новый `updateBoard` и заменённый `README.md`), чтобы осталось только применить.
-::contentReference[oaicite:0]{index=0}
+### 6. Connect the Telegram Webhook
+
+Use your bot token and the Worker URL:
+
+```bash
+curl "https://api.telegram.org/bot<YOUR_TOKEN>/setWebhook?url=https://<your-worker>.workers.dev/webhook/<YOUR_TOKEN>"
 ```
+
+Example:
+
+```bash
+curl "https://api.telegram.org/bot1234567890:ABCDEF/setWebhook?url=https://cool-frog-62b9.lechat-reg.workers.dev/webhook/1234567890:ABCDEF"
+```
+
+You should get:
+
+```json
+{"ok":true,"result":true,"description":"Webhook was set"}
+```
+
+---
+
+### 7. Test the Bot
+
+In your Telegram group:
+
+1. Add your bot as a member.
+2. Send the command `/open`.
+
+The bot replies with a single button:
+
+```
+📬 Open in DM
+```
+
+Click it → you’ll be redirected to your bot’s private chat.
+
+There, the bot sends:
+
+```
+📅 Open Calendar
+```
+
+Press the button — the web calendar opens right inside Telegram.
+
+You can now tap on dates to book or unbook them.
+
+---
+
+## 📡 API Endpoints (for debugging)
+
+| Endpoint                 | Method | Description                        |
+| ------------------------ | ------ | ---------------------------------- |
+| `/status`                | GET    | Health check and DB row count      |
+| `/bookings?chat_id=<id>` | GET    | Returns JSON of all bookings       |
+| `/ingest`                | POST   | Create a booking (used by WebApp)  |
+| `/cancel_api`            | POST   | Cancel booking (by owner or admin) |
+
+---
+
+## 🧠 Technical Notes
+
+* All data is stored locally in the D1 database — no external backend.
+* Each Telegram chat (group) has its own namespace of dates.
+* The combination `(chat_id, date)` is unique → one booking per date per group.
+* Usernames and IDs are stored for identification only; no sensitive info.
+* The WebApp communicates via Telegram `sendData()` and falls back to `/ingest`.
+
+---
+
+## 💡 Example Use Cases
+
+* Team scheduling (who’s on duty each day)
+* Room or equipment booking
+* Volunteer calendar
+* Shift planning for small teams
+* Personal “who’s available” coordination
+
+---
+
+## 🧾 License
+
+MIT License.
+Copyright © 2025.
+
+Feel free to fork, modify, and deploy your own instance.
+Contributions are welcome!
+
