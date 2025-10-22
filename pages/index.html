@@ -68,17 +68,26 @@
       border-color: var(--theirs-border);
     }
 
+    /* colors */
     .fc-event.mine {
-      background: var(--mine-bg) !important;
-      border-color: var(--mine-border) !important;
-      color: #102a10 !important;
-      font-weight: 600;
+      background: #c8f7c5 !important;
+      /* light green */
+      border-color: #2e7d32 !important;
     }
 
     .fc-event.theirs {
-      background: var(--theirs-bg) !important;
-      border-color: var(--theirs-border) !important;
-      color: #2b0d0d !important;
+      background: #ffd6cc !important;
+      /* light coral */
+      border-color: #c62828 !important;
+    }
+
+    /* force black text for both kinds */
+    .fc-event.mine,
+    .fc-event.mine .fc-event-main,
+    .fc-event.theirs,
+    .fc-event.theirs .fc-event-main,
+    .fc-event-title {
+      color: #000 !important;
       font-weight: 600;
     }
 
@@ -101,6 +110,16 @@
     .btn[disabled] {
       opacity: .5;
       cursor: not-allowed;
+    }
+
+
+
+
+
+    /* (optional, to make titles smaller and centered) */
+    .fc-event-title {
+      font-size: 0.8rem;
+      text-align: center;
     }
   </style>
 </head>
@@ -215,26 +234,14 @@
         selectable: true,
         selectAllow: (info) => !bookedMap.has(toISODate(info.start)),
 
-        dateClick: (arg) => {
+        dateClick: async (arg) => {
           const day = toISODate(arg.date);
           const b = bookedMap.get(day);
           if (b) {
-            // Занято. Если это моя бронь — предложим снять.
+            // if it's mine → immediately cancel; otherwise ignore
             if (Number(b.user_id) === UID) {
-              showPopup('Мой занятый день', `${day} — ваша бронь (${b.user_name}). Снять?`, [
-                { id: 'cancel', type: 'default', text: 'Снять бронь' },
-                { type: 'close', text: 'Закрыть' }
-              ]);
-              // перехватим result через onEvent
-              Telegram?.WebApp?.onEvent?.('popupClosed', async (ev) => {
-                // В новом SDK popupClosed содержит button_id; подстрахуемся
-                const bid = ev?.button_id || ev?.buttonId;
-                if (bid === 'cancel') {
-                  await cancelBooking(day);
-                }
-              });
-            } else {
-              showPopup('День занят', `${day} уже занят (${b.user_name}).`);
+              await cancelBooking(day);
+              await reloadEvents();
             }
             return;
           }
@@ -263,66 +270,64 @@
 
 
     async function bookSelected() {
-  if (!selectedDate) {
-    showPopup('Нет даты', 'Сначала выберите свободный день.');
-    return;
-  }
+      if (!selectedDate) {
+        showPopup('Нет даты', 'Сначала выберите свободный день.');
+        return;
+      }
 
-  const payload = {
-    type: 'book',
-    chat_id: CHAT_ID,
-    topic_id: TOPIC_ID || undefined,
-    date: selectedDate,
-    user_id: UID || 0,
-    user_name: UNAME || 'через WebApp'
-  };
+      const payload = {
+        type: 'book',
+        chat_id: CHAT_ID,
+        topic_id: TOPIC_ID || undefined,
+        date: selectedDate,
+        user_id: UID || 0,
+        user_name: UNAME || 'через WebApp'
+      };
 
-  console.log('[BOOK] intent', payload);
+      console.log('[BOOK] intent', payload);
 
-  // 1) Пытаемся отправить через Telegram WebApp (если внутри Telegram)
-  let viaSendData = false;
-  try {
-    if (window.Telegram?.WebApp?.sendData) {
-      Telegram.WebApp.sendData(JSON.stringify(payload));
-      viaSendData = true;
-      console.log('[BOOK] sent via sendData');
+      // 1) Пытаемся отправить через Telegram WebApp (если внутри Telegram)
+      let viaSendData = false;
+      try {
+        if (window.Telegram?.WebApp?.sendData) {
+          Telegram.WebApp.sendData(JSON.stringify(payload));
+          viaSendData = true;
+          console.log('[BOOK] sent via sendData');
+        }
+      } catch (e) {
+        console.warn('[BOOK] sendData error', e);
+      }
+
+      // 2) Независимо от исхода — дубль напрямую в воркер (идемпотентно)
+      let viaFetch = false;
+      if (INGEST) {
+        try {
+          const r = await fetch(INGEST, {
+            method: 'POST',
+            mode: 'cors',
+            credentials: 'omit',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify(payload),
+          });
+          console.log('[BOOK] fetch status', r.status);
+          viaFetch = r.ok;
+        } catch (e) {
+          console.error('[BOOK] fetch error', e);
+        }
+      } else {
+        console.warn('[BOOK] no INGEST url present');
+      }
+
+      const delivered = viaSendData || viaFetch;
+
+      if (delivered) {
+        selectedDate = null;
+        confirmBtn.disabled = true;
+        await reloadEvents();
+      } else {
+        console.warn('[BOOK] delivery failed');
+      }
     }
-  } catch (e) {
-    console.warn('[BOOK] sendData error', e);
-  }
-
-  // 2) Независимо от исхода — дубль напрямую в воркер (идемпотентно)
-  let viaFetch = false;
-  if (INGEST) {
-    try {
-      const r = await fetch(INGEST, {
-        method: 'POST',
-        mode: 'cors',
-        credentials: 'omit',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(payload),
-      });
-      console.log('[BOOK] fetch status', r.status);
-      viaFetch = r.ok;
-    } catch (e) {
-      console.error('[BOOK] fetch error', e);
-    }
-  } else {
-    console.warn('[BOOK] no INGEST url present');
-  }
-
-  const delivered = viaSendData || viaFetch;
-
-  if (delivered) {
-    const day = selectedDate;
-    selectedDate = null;
-    confirmBtn.disabled = true;
-    await reloadEvents();
-    showPopup('Готово', `Бронь на ${day} сохранена.`);
-  } else {
-    showPopup('Не отправлено', 'Не удалось передать бронь в бот. Проверьте подключение.');
-  }
-}
 
 
 
@@ -330,12 +335,12 @@
 
 
 
-  (async () => {
-    try { await initCalendar(); }
-    catch (e) { console.error('initCalendar failed', e); alert('Не удалось инициализировать календарь.'); return; }
-    confirmBtn.addEventListener('click', bookSelected);
-    refreshBtn.addEventListener('click', reloadEvents);
-  })();
+    (async () => {
+      try { await initCalendar(); }
+      catch (e) { console.error('initCalendar failed', e); alert('Не удалось инициализировать календарь.'); return; }
+      confirmBtn.addEventListener('click', bookSelected);
+      refreshBtn.addEventListener('click', reloadEvents);
+    })();
 
 
 
