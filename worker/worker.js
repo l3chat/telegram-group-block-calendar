@@ -1,6 +1,6 @@
 /**
  * Cloudflare Worker — Telegram Group Booking Calendar
- * (English, DM-only button, DM /start shows group name)
+ * (English UI, DM-only flow, /start shows group name, optional pin buttons)
  *
  * ENV (Workers → Settings):
  *   Secret   BOT_TOKEN        — Telegram Bot API token
@@ -202,6 +202,25 @@ export default {
       }
       const cmd = extractCommand(msg);
 
+      // ---- /help ----
+      if (cmd && /^\/help(?:@\w+)?$/i.test(cmd.raw)) {
+        const help =
+`How it works:
+• In a group: type /open. You’ll get a button “Open in DM”.
+• In private chat: tap “Open Calendar” to launch the WebApp.
+
+Calendar rules:
+• Tap a free day to book.
+• Tap your booked day to cancel.
+• Others’ bookings are read-only.
+
+Tips:
+• Use /pin_open once to pin a permanent “Open in DM” button to the chat.
+• Commands available: /open, /list, /help, /pin_open, /unpin_open.`;
+        await sendText(env, msg.chat.id, help, msg.message_thread_id ? { message_thread_id: msg.message_thread_id } : {});
+        return new Response('ok');
+      }
+
       // ---- /open (group: DM deep-link; private: web_app button) ----
       if (cmd && /^\/open(?:@\w+)?$/i.test(cmd.raw)) {
         const chat = msg.chat;
@@ -227,7 +246,7 @@ export default {
             });
             console.log('open/private resp:', await resp.json().catch(()=>null));
           } else {
-            // Only one button now (no browser URL)
+            // Only one button (no browser URL)
             const resp = await api(env.BOT_TOKEN, 'sendMessage', {
               chat_id: chat.id,
               text: 'Open the calendar:',
@@ -313,6 +332,56 @@ export default {
           console.error('list fail', e);
           await sendText(env, chat.id, '❗ Failed to load list.');
         }
+        return new Response('ok');
+      }
+
+      // ---- /pin_open — create & pin a permanent button in the chat ----
+      if (cmd && /^\/pin_open(?:@\w+)?$/i.test(cmd.raw)) {
+        const chat = msg.chat;
+        const threadId = msg.message_thread_id;
+        const from = msg.from;
+
+        if (chat?.type !== 'group' && chat?.type !== 'supergroup') {
+          await api(env.BOT_TOKEN, 'sendMessage', { chat_id: chat.id, text: 'Use this in a group.' });
+          return new Response('ok');
+        }
+
+        const deepLink =
+          `https://t.me/${env.BOT_USERNAME}?start=${encodeURIComponent('G'+chat.id + (threadId ? '_T'+threadId : ''))}`;
+
+        // send message with the button (into the same topic if present)
+        const r = await api(env.BOT_TOKEN, 'sendMessage', {
+          chat_id: chat.id,
+          text: 'Open the calendar:',
+          reply_markup: { inline_keyboard: [[{ text: '📬 Open in DM', url: deepLink }]] },
+          ...(threadId ? { message_thread_id: threadId } : {})
+        });
+        const data = await r.json().catch(()=>null);
+        const mid = data?.result?.message_id;
+
+        // pin without notification
+        if (mid) {
+          try {
+            await fetch(`https://api.telegram.org/bot${env.BOT_TOKEN}/pinChatMessage`, {
+              method:'POST', headers:{'content-type':'application/json'},
+              body: JSON.stringify({ chat_id: chat.id, message_id: mid, disable_notification: true })
+            });
+          } catch {}
+        }
+
+        return new Response('ok');
+      }
+
+      // ---- /unpin_open — unpin all (or handle as you like) ----
+      if (cmd && /^\/unpin_open(?:@\w+)?$/i.test(cmd.raw)) {
+        const chat = msg.chat;
+        if (chat?.type !== 'group' && chat?.type !== 'supergroup') return new Response('ok');
+        try {
+          await fetch(`https://api.telegram.org/bot${env.BOT_TOKEN}/unpinAllChatMessages`, {
+            method:'POST', headers:{'content-type':'application/json'},
+            body: JSON.stringify({ chat_id: chat.id })
+          });
+        } catch {}
         return new Response('ok');
       }
 

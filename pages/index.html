@@ -19,36 +19,15 @@
       --theirs-bg: #ffd6cc;
       --theirs-border: #c62828;
     }
-    body {
-      font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
-      margin: 0;
-      background: #fff;
-    }
-    .wrap {
-      max-width: 920px;
-      margin: 0 auto;
-      padding: 10px 12px 24px;
-    }
-    #legend {
-      display: flex;
-      gap: 16px;
-      align-items: center;
-      font-size: 14px;
-      margin: 6px 2px 10px;
-      color: #333;
-    }
-    .pill { display: inline-flex; align-items: center; gap: 8px; }
-    .dot {
-      width: 14px;
-      height: 14px;
-      border-radius: 4px;
-      border: 1px solid;
-      display: inline-block;
-    }
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 0; background:#fff; }
+    .wrap { max-width: 920px; margin: 0 auto; padding: 10px 12px 24px; }
+    #legend { display:flex; gap:16px; align-items:center; font-size:14px; margin: 6px 2px 10px; color:#333; }
+    .pill { display:inline-flex; align-items:center; gap:8px; }
+    .dot { width:14px; height:14px; border-radius:4px; border:1px solid; display:inline-block; }
     .dot.mine   { background: var(--mine-bg);   border-color: var(--mine-border); }
     .dot.theirs { background: var(--theirs-bg); border-color: var(--theirs-border); }
 
-    /* Calendar events: clickable, non-editable, black text */
+    /* events: clickable, non-editable, black text */
     .fc-event { cursor: pointer; }
     .fc-event.mine {
       background: var(--mine-bg) !important;
@@ -78,10 +57,10 @@
   </div>
 
   <script>
-    // --- Telegram initialization
+    // Telegram init
     try { Telegram.WebApp.ready?.(); Telegram.WebApp.expand?.(); } catch {}
 
-    // --- Parameters from URL and Telegram initData
+    // ---- parameters from URL / initData
     const qs = new URLSearchParams(location.search);
     const CHAT_ID  = qs.get('chat_id');
     const TOPIC_ID = qs.get('topic_id') || '';
@@ -97,7 +76,7 @@
       ? [fromUnsafe.first_name, fromUnsafe.last_name].filter(Boolean).join(' ').trim()
       : UNAME_QS) || 'via WebApp';
 
-    // --- Base API URL (strip /ingest)
+    // ---- base API URL (strip /ingest)
     let apiBase = '';
     try {
       const u = new URL(INGEST);
@@ -108,10 +87,10 @@
     const CANCEL_URL   = apiBase ? `${apiBase}/cancel_api` : '';
 
     const calendarEl = document.getElementById('calendar');
-    const bookedMap = new Map(); // 'YYYY-MM-DD' -> { user_id, user_name }
+    const bookedMap = new Map();  // 'YYYY-MM-DD' -> { user_id, user_name }
     let calendar = null;
 
-    // --- Utility functions
+    // ---- utils
     function toISODate(d) {
       const dt = (d instanceof Date) ? d : new Date(d);
       const y = dt.getFullYear();
@@ -125,7 +104,7 @@
       return toISODate(dt);
     }
 
-    // --- Fetch and render bookings
+    // ---- fetch & render bookings
     async function fetchBookings() {
       bookedMap.clear();
       if (!BOOKINGS_URL) return [];
@@ -146,7 +125,7 @@
           id: `d:${b.date}`,
           title: b.user_name || '—',
           start: b.date,
-          end: addDaysISO(b.date, 1),
+          end: addDaysISO(b.date, 1),   // allDay end is exclusive
           allDay: true,
           display: 'block',
           classNames: [ mine ? 'mine' : 'theirs' ]
@@ -162,7 +141,7 @@
       calendar.render();
     }
 
-    // --- Network operations (silent)
+    // ---- network ops (silent)
     async function sendBooking(day) {
       const payload = {
         type: 'book',
@@ -173,10 +152,10 @@
         user_name: UNAME || 'via WebApp'
       };
 
-      // Try sending through Telegram
+      // Try via Telegram
       try { Telegram?.WebApp?.sendData?.(JSON.stringify(payload)); } catch {}
 
-      // Also send to Worker (idempotent)
+      // Duplicate to Worker (idempotent)
       if (INGEST) {
         try {
           await fetch(INGEST, {
@@ -193,37 +172,35 @@
       if (!CANCEL_URL) return;
       try {
         await fetch(CANCEL_URL, {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
+          method:'POST', headers:{'content-type':'application/json'},
           body: JSON.stringify({ chat_id: CHAT_ID, date: day, user_id: UID })
         });
       } catch {}
     }
 
-    // --- Unified tap handler
+    // ---- unified tap handler
     async function handleDayTap(day) {
       const b = bookedMap.get(day);
 
       if (b) {
-        // Day is booked
+        // booked: if it's mine — cancel
         if (Number(b.user_id) === UID) {
-          // Cancel own booking
           await cancelBooking(day);
           await reloadEvents();
         }
-        return; // Ignore others’ bookings
+        return; // others’ booking — ignore
       }
 
-      // Day is free — make a booking
+      // free: create booking
       await sendBooking(day);
       await reloadEvents();
 
-      // Small flash animation
+      // small flash
       calendar.select({ start: day, end: addDaysISO(day, 1), allDay: true });
       setTimeout(() => calendar.unselect(), 200);
     }
 
-    // --- Initialization
+    // ---- init
     (async () => {
       const initial = toEvents(await fetchBookings());
 
@@ -232,16 +209,18 @@
         height: 'auto',
         selectable: true,
         selectLongPressDelay: 0,
+
+        // events are non-editable
         editable: false,
         eventStartEditable: false,
         eventDurationEditable: false,
         eventResizableFromStart: false,
 
-        // Clicks on day or event
+        // clicks: day or event behave the same
         dateClick: async (arg) => { await handleDayTap(toISODate(arg.date)); },
         eventClick: async (info) => { await handleDayTap(toISODate(info.event.start)); },
 
-        // Prevent selecting booked days
+        // prevent selecting occupied days
         selectAllow: (info) => !bookedMap.has(toISODate(info.start)),
 
         events: initial,
