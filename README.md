@@ -67,14 +67,17 @@ It’s fully edge-hosted on **Cloudflare Workers + D1 + Pages** and requires **n
 1. In Cloudflare Dashboard → **Workers → Create Worker**  
 2. Paste the contents of `worker.js`  
 3. Add **Environment Variables**:
+
 | Key | Type | Example |
 |------|------|---------|
 | `BOT_TOKEN` | Secret | `123456789:ABCDEF...` |
 | `BOT_USERNAME` | Plain | `GroupBookingBot` |
 | `PAGES_URL` | Plain | `https://groupcalendar.pages.dev` |
+
 4. Bind your **D1 database** as `DB`
 
 #### D1 Schema
+
 ```sql
 CREATE TABLE IF NOT EXISTS bookings(
 chat_id   TEXT NOT NULL,
@@ -84,10 +87,13 @@ user_name TEXT,
 ts        TEXT NOT NULL DEFAULT (datetime('now')),
 PRIMARY KEY(chat_id, date)
 );
+```
 
 Set Webhook
 
+```
 curl "https://api.telegram.org/bot<YOUR_TOKEN>/setWebhook?url=https://<your-worker>.workers.dev/webhook/<YOUR_TOKEN>"
+```
 
 
 ---
